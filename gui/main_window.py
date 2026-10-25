@@ -470,7 +470,10 @@ class RegionRowWidget(QWidget):
             app = QApplication.instance()
             screen = app.primaryScreen() if app else None
             if screen is not None and w > 0 and h > 0:
-                pix = screen.grabWindow(0, x, y, w, h)
+                # screen.grabWindow(0) trả về pixmap độ phân giải vật lý (ví dụ 1920x1080)
+                # Cắt trực tiếp theo tọa độ vật lý (x, y, w, h)
+                full_pix = screen.grabWindow(0)
+                pix = full_pix.copy(x, y, w, h)
                 if not pix.isNull() and pix.width() > 0 and pix.height() > 0:
                     self.lbl_thumbnail.setPixmap(
                         pix.scaled(140, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)

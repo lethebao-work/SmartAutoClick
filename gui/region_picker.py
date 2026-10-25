@@ -73,10 +73,12 @@ class RegionPickerOverlay(QWidget):
             self._selecting = False
             rect = self._get_rect()
             if rect.width() > 5 and rect.height() > 5:
-                # Convert widget-local coords → global screen coords (logical pixels)
-                global_x = self._virtual_geometry.x() + rect.x()
-                global_y = self._virtual_geometry.y() + rect.y()
-                self.region_selected.emit(global_x, global_y, rect.width(), rect.height())
+                # Chuyển đổi widget-local coords → tọa độ pixel vật lý thực tế trên màn hình
+                phys_x = int(round((self._virtual_geometry.x() + rect.x()) * self._dpr))
+                phys_y = int(round((self._virtual_geometry.y() + rect.y()) * self._dpr))
+                phys_w = int(round(rect.width() * self._dpr))
+                phys_h = int(round(rect.height() * self._dpr))
+                self.region_selected.emit(phys_x, phys_y, phys_w, phys_h)
             else:
                 self.cancelled.emit()
             self.close()
@@ -130,12 +132,14 @@ class RegionPickerOverlay(QWidget):
             for corner in corners:
                 painter.drawRect(corner)
 
-            # Dimension label with global coords
-            global_x = self._virtual_geometry.x() + rect.x()
-            global_y = self._virtual_geometry.y() + rect.y()
+            # Dimension label with physical pixel coords (khớp 1:1 với MSS, DXGI, Clicker)
+            phys_x = int(round((self._virtual_geometry.x() + rect.x()) * self._dpr))
+            phys_y = int(round((self._virtual_geometry.y() + rect.y()) * self._dpr))
+            phys_w = int(round(rect.width() * self._dpr))
+            phys_h = int(round(rect.height() * self._dpr))
             label_text = (
-                f"  {rect.width()} × {rect.height()}   "
-                f"@({global_x}, {global_y})  "
+                f"  {phys_w} × {phys_h}   "
+                f"@({phys_x}, {phys_y})  "
             )
             font = QFont("Segoe UI", 11)
             font.setBold(True)
