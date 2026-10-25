@@ -208,6 +208,8 @@ def pick_region(parent_widget=None) -> Optional[Tuple[int, int, int, int]]:
     # (most games run full-screen on primary anyway).
     # The overlay covers the full virtual desktop so the user can pick on any monitor.
 
+    overlay = RegionPickerOverlay(screen_pixmap, virtual_geometry, dpr)
+
     # Lưu lại ảnh crop thực tế ngay tại thời điểm chọn vùng
     cropped_bgr = [None]
 
