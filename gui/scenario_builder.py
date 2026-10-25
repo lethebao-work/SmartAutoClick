@@ -363,6 +363,12 @@ class ScenarioBuilderWidget(QWidget):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(10)
 
+        # Thông báo trực quan về luồng hoạt động
+        lbl_info = QLabel("ℹ️ <b>Mô Hình Kịch Bản Trực Quan:</b> Các bước dưới đây mô phỏng trực quan chu trình vận hành của Bot (Bấm Roll ➔ Chờ trễ / Animation ➔ Soi màu HSV ➔ Khóa / Dừng). Mọi thay đổi đều được đồng bộ trực tiếp sang bộ máy thực thi của Auto Clicker.")
+        lbl_info.setWordWrap(True)
+        lbl_info.setStyleSheet("background-color: #1e293b; color: #94a3b8; border: 1px solid #334155; border-radius: 6px; padding: 8px 12px; font-size: 12px;")
+        lay.addWidget(lbl_info)
+
         # Toolbar: Nút thêm bước, nạp mẫu chuẩn
         bar = QHBoxLayout()
         self.btn_add_step = QPushButton("➕ Thêm Bước")

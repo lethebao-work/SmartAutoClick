@@ -27,14 +27,16 @@
 
 ### 4. Độ lệch thời gian ngẫu nhiên (Random Delay Offset Jitter)
 - Tự động cộng/trừ ngẫu nhiên một khoảng thời gian (± ms) giữa các lần click.
-- Giả lập hành vi người thật, ngăn chặn hoàn toàn hệ thống chống auto-click / anti-macro của game.
+- Giảm thiểu tính máy móc, mô phỏng nhịp bấm tự nhiên hơn.
 
 ### 5. Ghi & Phát lại Macro thao tác chuột (Record & Playback Macro)
 - Tab riêng cho phép người dùng **Ghi lại các thao tác click chuột thực tế** (tọa độ, nút bấm trái/phải, thời gian chờ giữa các lần bấm).
 - Phát lại chuỗi thao tác với nhiều tùy chọn:
   - Tốc độ phát: `0.5x`, `1.0x (Chuẩn)`, `2.0x`, `5.0x (Siêu tốc)`
   - Số lần lặp lại hoặc **Lặp vô hạn**
-  - Lưu và Nạp danh sách macro từ file `.json` để chia sẻ cho người khác.
+  - Tự động dừng khẩn cấp khi người dùng di chuột vào góc màn hình (Fail-Safe).
+  - Khóa xung đột an toàn: không thể phát macro đồng thời khi Auto Clicker đang chạy.
+  - Lưu và Nạp danh sách macro từ file `.json`.
 
 ---
 
@@ -42,17 +44,19 @@
 
 ### Nhận diện màu sắc theo thời gian thực (OpenCV HSV)
 - Tự động phân tích từng ô vật phẩm theo dải màu HSV (Tím Epic, Đỏ Mythic, Vàng Legendary, Xanh Rare, Xanh Uncommon...).
+- Khử nhiễu pixel nhỏ bằng thuật toán hình thái học (Morphological Open) và ưu tiên chọn theo cấp độ hiếm (Mythic > Legendary > Epic > Rare).
 - **Color Sampler (Hút màu)**: Kính lúp phóng to 8x, click trực tiếp vào ảnh game để lấy màu chính xác pixel.
 
 ### Logic đa điều kiện & Multi-Slot
 - **Hành động theo màu**:
   - `stop`: Dừng ngay khi phát hiện đồ hiếm (kèm âm thanh chuông báo và chụp ảnh lưu lại).
-  - `lock`: Khóa giữ ô đồ hiếm đó và tiếp tục roll các ô còn lại.
+  - `skip/lock`: Bỏ qua ô đồ hiếm đó phía bot và tiếp tục roll các ô còn lại (dùng khi game cho phép roll từng ô).
 - **Theo dõi nhiều ô vật phẩm**: Hỗ trợ không giới hạn số slot quan sát độc lập.
 - **Region Picker Overlay**: Kéo thả chuột trực quan trên màn hình để chọn vùng soi kết quả.
-- **Animation Detection**: Tự động nhận biết khi nào vòng xoay roll kết thúc để bấm tiếp ngay.
-- **Budget Guard**: Tự động dừng an toàn khi nút Roll bị mờ (hết tiền).
-- **Profile System**: Lưu và chuyển đổi nhiều cấu hình game khác nhau.
+- **Fail-safe thị giác**: Tự động dừng khẩn cấp nếu màn hình bị che khuất, tắt hoặc chụp hỏng, ngăn chặn roll mù phá đồ.
+- **Animation Detection (Tùy chọn)**: Nhận diện khi nào hoạt ảnh cuộn đồ dừng hẳn mới bấm tiếp.
+- **Budget Guard (Tùy chọn)**: Tự động dừng an toàn khi nút Roll bị mờ (hết tiền).
+- **Foreground Guard**: Tự động tạm dừng an toàn khi người dùng chuyển sang cửa sổ khác hoặc di chuột can thiệp.
 
 ---
 
@@ -90,23 +94,29 @@ python build.py
 
 ```text
 Autoclick/
+├── .github/workflows/       # CI/CD tự động chạy test suite
 ├── dist/
 │   └── SmartAutoClick.exe   # File ứng dụng độc lập đóng gói sẵn
 ├── assets/                  # Icons và hình ảnh khay hệ thống
+├── profiles/                # Thư mục lưu các cấu hình game độc lập
 ├── core/
-│   ├── capture.py           # Chụp màn hình (mss / PIL fallback)
-│   ├── detector.py          # Phân tích dải màu HSV
+│   ├── capture.py           # Chụp màn hình fail-safe (mss / PIL)
+│   ├── detector.py          # Phân tích dải màu HSV & khử nhiễu
 │   ├── clicker.py           # Mô phỏng chuột & human jitter
+│   ├── window_guard.py      # Giám sát Foreground & can thiệp chuột
 │   ├── engine.py            # Vòng lặp tự động, anim detect, budget guard
 │   ├── config_manager.py    # Quản lý file cấu hình & profile
 │   └── macro_recorder.py    # Ghi và phát lại macro chuột
 ├── gui/
 │   ├── main_window.py       # Cửa sổ chính 5 tab & System tray
 │   ├── compact_window.py    # Mini widget nổi Always-on-Top
+│   ├── scenario_builder.py  # Trực quan hóa kịch bản vận hành
 │   ├── region_picker.py     # Overlay kéo thả chọn vùng
 │   └── color_sampler.py     # Cửa sổ hút màu & kính lúp 8x
+├── tests/                   # Bộ kiểm thử tự động (Unit test & Fakes)
 ├── main.py                  # Điểm khởi chạy ứng dụng
 ├── build.py                 # Script đóng gói EXE tự động
 ├── config.json              # File cấu hình JSON
+├── requirements.lock        # Khóa phiên bản dependencies
 └── requirements.txt         # Danh sách thư viện Python
 ```

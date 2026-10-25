@@ -10,6 +10,88 @@ def get_base_dir() -> str:
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+def get_data_dir() -> str:
+    """Trả về thư mục ghi dữ liệu người dùng (screenshots, logs, profiles, config).
+    Nếu thư mục ứng dụng có quyền ghi, dùng luôn thư mục ứng dụng (portable mode).
+    Nếu không (ví dụ cài đặt trong C:\\Program Files\\), fallback sang %APPDATA%/SmartAutoClick.
+    """
+    base = get_base_dir()
+    test_file = os.path.join(base, ".write_test")
+    try:
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+        return base
+    except (OSError, PermissionError):
+        appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+        data_dir = os.path.join(appdata, "SmartAutoClick")
+        os.makedirs(data_dir, exist_ok=True)
+        return data_dir
+
+DEFAULT_COLOR_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    "red": {
+        "name": "Đỏ (Red / Mythic)",
+        "h_min": 0,
+        "h_max": 10,
+        "s_min": 100,
+        "s_max": 255,
+        "v_min": 80,
+        "v_max": 255,
+        "h2_min": 170,
+        "h2_max": 179
+    },
+    "gold": {
+        "name": "Vàng (Gold / Legendary)",
+        "h_min": 18,
+        "h_max": 35,
+        "s_min": 100,
+        "s_max": 255,
+        "v_min": 100,
+        "v_max": 255
+    },
+    "purple": {
+        "name": "Tím (Purple / Epic)",
+        "h_min": 125,
+        "h_max": 160,
+        "s_min": 60,
+        "s_max": 255,
+        "v_min": 60,
+        "v_max": 255
+    },
+    "blue": {
+        "name": "Xanh dương (Blue / Rare)",
+        "h_min": 95,
+        "h_max": 125,
+        "s_min": 80,
+        "s_max": 255,
+        "v_min": 70,
+        "v_max": 255
+    },
+    "green": {
+        "name": "Xanh lá (Green / Uncommon)",
+        "h_min": 35,
+        "h_max": 85,
+        "s_min": 60,
+        "s_max": 255,
+        "v_min": 60,
+        "v_max": 255
+    }
+}
+
+def validate_color_definition(rule: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensures HSV ranges are valid within OpenCV bounds [0..179] for H and [0..255] for S, V."""
+    validated = dict(rule)
+    validated["h_min"] = max(0, min(179, int(rule.get("h_min", 0))))
+    validated["h_max"] = max(0, min(179, int(rule.get("h_max", 179))))
+    validated["s_min"] = max(0, min(255, int(rule.get("s_min", 0))))
+    validated["s_max"] = max(0, min(255, int(rule.get("s_max", 255))))
+    validated["v_min"] = max(0, min(255, int(rule.get("v_min", 0))))
+    validated["v_max"] = max(0, min(255, int(rule.get("v_max", 255))))
+    if "h2_min" in rule and "h2_max" in rule:
+        validated["h2_min"] = max(0, min(179, int(rule["h2_min"])))
+        validated["h2_max"] = max(0, min(179, int(rule["h2_max"])))
+    return validated
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "version": "2.0",
     "roll_button": {
@@ -30,55 +112,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "purple",
         "red"
     ],
-    "color_definitions": {
-        "purple": {
-            "name": "Tím (Purple / Epic)",
-            "h_min": 125,
-            "h_max": 160,
-            "s_min": 60,
-            "s_max": 255,
-            "v_min": 60,
-            "v_max": 255
-        },
-        "red": {
-            "name": "Đỏ (Red / Mythic)",
-            "h_min": 0,
-            "h_max": 10,
-            "s_min": 100,
-            "s_max": 255,
-            "v_min": 80,
-            "v_max": 255,
-            "h2_min": 170,
-            "h2_max": 180
-        },
-        "gold": {
-            "name": "Vàng (Gold / Legendary)",
-            "h_min": 20,
-            "h_max": 35,
-            "s_min": 100,
-            "s_max": 255,
-            "v_min": 100,
-            "v_max": 255
-        },
-        "blue": {
-            "name": "Xanh dương (Blue / Rare)",
-            "h_min": 95,
-            "h_max": 125,
-            "s_min": 80,
-            "s_max": 255,
-            "v_min": 70,
-            "v_max": 255
-        },
-        "green": {
-            "name": "Xanh lá (Green / Uncommon)",
-            "h_min": 35,
-            "h_max": 85,
-            "s_min": 60,
-            "s_max": 255,
-            "v_min": 60,
-            "v_max": 255
-        }
-    },
+    "color_definitions": copy.deepcopy(DEFAULT_COLOR_DEFINITIONS),
     "action_rules": {
         "red": "stop",
         "purple": "lock",
@@ -128,16 +162,23 @@ class ConfigManager:
             return self.data
 
     def save(self) -> bool:
-        """Saves current configuration to file."""
+        """Saves current configuration to file atomically via temp file."""
         try:
             dir_name = os.path.dirname(self.config_path)
             if dir_name and not os.path.exists(dir_name):
                 os.makedirs(dir_name, exist_ok=True)
-            with open(self.config_path, "w", encoding="utf-8") as f:
+            tmp_path = f"{self.config_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, self.config_path)
             return True
         except Exception as e:
             print(f"[ConfigManager] Error saving config: {e}")
+            if os.path.exists(f"{self.config_path}.tmp"):
+                try:
+                    os.remove(f"{self.config_path}.tmp")
+                except Exception:
+                    pass
             return False
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -185,3 +226,98 @@ class ConfigManager:
         self.data["target_colors"] = colors
         if auto_save:
             self.save()
+
+    def get_profiles_dir(self) -> str:
+        pdir = os.path.join(get_data_dir(), "profiles")
+        os.makedirs(pdir, exist_ok=True)
+        return pdir
+
+    def list_profiles(self) -> List[str]:
+        """Returns all available profile names from profiles/ dir and internal dict."""
+        names = set()
+        pdir = self.get_profiles_dir()
+        if os.path.exists(pdir):
+            for fname in os.listdir(pdir):
+                if fname.endswith(".json"):
+                    names.add(fname[:-5])
+        for k in self.data.get("profiles", {}).keys():
+            names.add(k)
+        if not names:
+            names.add("default")
+        return sorted(list(names))
+
+    def save_profile(self, name: str, profile_data: Any = None) -> bool:
+        """Saves full profile settings to profiles/<name>.json atomically and updates internal data."""
+        if profile_data is None:
+            # Capture full current configuration except meta profiles dictionary
+            profile_data = {
+                k: copy.deepcopy(v) for k, v in self.data.items()
+                if k not in ("profiles", "active_profile")
+            }
+        profile_data["name"] = name
+
+        # Save to profiles/<name>.json atomically
+        pdir = self.get_profiles_dir()
+        filepath = os.path.join(pdir, f"{name}.json")
+        tmp_filepath = f"{filepath}.tmp"
+        try:
+            with open(tmp_filepath, "w", encoding="utf-8") as f:
+                json.dump(profile_data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_filepath, filepath)
+        except Exception as e:
+            print(f"[ConfigManager] Error saving profile file {filepath}: {e}")
+            if os.path.exists(tmp_filepath):
+                try:
+                    os.remove(tmp_filepath)
+                except Exception:
+                    pass
+            return False
+
+        # Also store in self.data["profiles"] for backward compatibility
+        if "profiles" not in self.data:
+            self.data["profiles"] = {}
+        self.data["profiles"][name] = profile_data
+        self.data["active_profile"] = name
+        self.save()
+        return True
+
+    def load_profile(self, name: str) -> Any:
+        """Loads full profile settings from profiles/<name>.json or internal dict, applying them to active config."""
+        pdir = self.get_profiles_dir()
+        filepath = os.path.join(pdir, f"{name}.json")
+        loaded_data = None
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    loaded_data = json.load(f)
+            except Exception as e:
+                print(f"[ConfigManager] Error reading profile {filepath}: {e}")
+
+        if not loaded_data:
+            loaded_data = self.data.get("profiles", {}).get(name)
+
+        if loaded_data:
+            # Apply all profile settings into self.data
+            for k, v in loaded_data.items():
+                if k not in ("profiles", "active_profile"):
+                    self.data[k] = copy.deepcopy(v)
+            self.data["active_profile"] = name
+            self.save()
+            return loaded_data
+        return None
+
+    def delete_profile(self, name: str) -> bool:
+        """Deletes profile file and removes it from config."""
+        pdir = self.get_profiles_dir()
+        filepath = os.path.join(pdir, f"{name}.json")
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except Exception as e:
+                print(f"[ConfigManager] Error deleting profile {filepath}: {e}")
+        if "profiles" in self.data and name in self.data["profiles"]:
+            del self.data["profiles"][name]
+        if self.data.get("active_profile") == name:
+            self.data["active_profile"] = "default"
+        self.save()
+        return True

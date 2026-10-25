@@ -135,8 +135,12 @@ class MacroPlayer:
                         # Thực hiện click
                         try:
                             pyautogui.click(x=x, y=y, button=btn)
-                        except Exception:
-                            pass
+                        except pyautogui.FailSafeException:
+                            print("[Macro] FailSafe kích hoạt! Dừng khẩn cấp.")
+                            self._stop_flag.set()
+                            break
+                        except Exception as e:
+                            print(f"[Macro] Lỗi khi click bước {idx}: {e}")
 
                         if self.on_step_played:
                             try:
@@ -160,6 +164,8 @@ class MacroPlayer:
     def stop(self):
         """Dừng phát lại macro."""
         self._stop_flag.set()
+        if self._thread is not None and self._thread.is_alive() and self._thread != threading.current_thread():
+            self._thread.join(timeout=1.0)
         self.is_playing = False
 
 

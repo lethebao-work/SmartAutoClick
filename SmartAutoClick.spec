@@ -6,7 +6,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('assets', 'assets')],
-    hiddenimports=[],
+    hiddenimports=['PySide6', 'pynput', 'pynput.keyboard', 'pynput.mouse', 'pynput.mouse._win32', 'pynput.keyboard._win32', 'pyautogui', 'cv2', 'numpy', 'mss', 'PIL'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets\\icon.ico'],
+    icon=['C:\\Users\\lethe\\Downloads\\FreeTime\\Autoclick\\assets\\icon.ico'],
 )

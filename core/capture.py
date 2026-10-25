@@ -23,9 +23,14 @@ except ImportError:
     ImageGrab = None
 
 
+class CaptureError(Exception):
+    """Raised when screen capture fails or returns invalid/pure black frames."""
+    pass
+
+
 class ScreenCapture:
     """
-    Fast screen capture using mss with PIL fallback and graceful headless handling.
+    Fast screen capture using mss with PIL fallback and strict fail-safe error handling.
     """
 
     def __init__(self):
@@ -36,17 +41,21 @@ class ScreenCapture:
         if self._sct is None and mss is not None:
             try:
                 self._sct = mss.mss()
-            except Exception as e:
+            except Exception:
                 self._sct = None
         return self._sct
 
-    def capture_region(self, x: int, y: int, w: int, h: int) -> np.ndarray:
+    def capture_region(self, x: int, y: int, w: int, h: int, allow_blank: bool = False) -> np.ndarray:
         """
         Captures a specific rectangle region of the screen.
         Returns a BGR numpy array (ready for OpenCV).
+        Raises CaptureError if capture fails or results in pure black frames.
         """
         if w <= 0 or h <= 0:
             raise ValueError(f"Invalid region dimensions: w={w}, h={h}")
+
+        last_error = None
+        img_bgr = None
 
         # Method 1: MSS (Fastest, ~3ms)
         if self.sct is not None:
@@ -60,24 +69,34 @@ class ScreenCapture:
                 sct_img = self.sct.grab(monitor)
                 img_np = np.array(sct_img)
                 if cv2 is not None:
-                    return cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
-                return img_np[:, :, :3]
-            except Exception:
-                pass
+                    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
+                else:
+                    img_bgr = img_np[:, :, :3]
+            except Exception as e:
+                last_error = e
 
         # Method 2: PIL ImageGrab fallback
-        if ImageGrab is not None:
+        if img_bgr is None and ImageGrab is not None:
             try:
                 pil_img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
                 img_np = np.array(pil_img)
                 if cv2 is not None:
-                    return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-                return img_np[:, :, ::-1]
-            except Exception:
-                pass
+                    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                else:
+                    img_bgr = img_np[:, :, ::-1]
+            except Exception as e:
+                last_error = e
 
-        # Method 3: Fallback simulated blank frame for testing / headless environments
-        return np.zeros((int(h), int(w), 3), dtype=np.uint8)
+        if img_bgr is None:
+            if allow_blank:
+                return np.zeros((int(h), int(w), 3), dtype=np.uint8)
+            raise CaptureError(f"Screen capture failed for region ({x}, {y}, {w}, {h}): {last_error or 'No capture backend available'}")
+
+        # Check for pure black frame (fail-safe for locked/disconnected screen)
+        if not allow_blank and img_bgr.size > 0 and float(img_bgr.mean()) < 0.5 and float(img_bgr.std()) == 0.0:
+            raise CaptureError(f"Pure black frame detected in region ({x}, {y}, {w}, {h}) - screen may be locked, asleep, or exclusive fullscreen")
+
+        return img_bgr
 
     def capture_fullscreen(self) -> np.ndarray:
         """Captures primary monitor."""

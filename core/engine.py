@@ -1,5 +1,6 @@
 import os
 import time
+import copy
 import threading
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Callable, Tuple
@@ -9,7 +10,8 @@ import numpy as np
 from core.capture import ScreenCapture
 from core.detector import ColorDetector
 from core.clicker import InputSimulator
-from core.config_manager import ConfigManager
+from core.config_manager import ConfigManager, get_data_dir
+from core.window_guard import WindowGuard
 
 try:
     import winsound
@@ -118,20 +120,22 @@ class BudgetGuard:
         """Chụp và ghi nhận độ sáng ban đầu của nút Roll để so sánh sau."""
         if not self.enabled:
             return
-        try:
-            import cv2
-            frame = capture.capture_region(self.btn_x, self.btn_y, self.btn_w, self.btn_h)
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            self._baseline_brightness = float(hsv[:, :, 2].mean())
-        except Exception:
-            self._baseline_brightness = None
+        import cv2
+        frame = capture.capture_region(self.btn_x, self.btn_y, self.btn_w, self.btn_h)
+        if frame is None or frame.size == 0:
+            raise RuntimeError(f"BudgetGuard không thể chụp vùng nút Roll ({self.btn_x}, {self.btn_y})")
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        self._baseline_brightness = float(hsv[:, :, 2].mean())
 
     def is_out_of_budget(self, capture: ScreenCapture) -> bool:
         """
         Trả về True nếu phát hiện nút Roll bị tối đi đáng kể → hết tiền.
         """
-        if not self.enabled or self._baseline_brightness is None:
+        if not self.enabled:
             return False
+        if self._baseline_brightness is None:
+            # Enabled nhưng không có baseline -> fail-safe dừng để bảo vệ tài khoản
+            return True
         try:
             import cv2
             frame = capture.capture_region(self.btn_x, self.btn_y, self.btn_w, self.btn_h)
@@ -140,7 +144,7 @@ class BudgetGuard:
             drop = self._baseline_brightness - current_brightness
             return drop > self.brightness_drop_threshold
         except Exception:
-            return False
+            return True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -196,15 +200,29 @@ class AutoClickEngine:
     5. Screenshot + Sound khi tìm thấy đồ hiếm
     """
 
-    def __init__(self, config_manager: ConfigManager):
+    def __init__(
+        self,
+        config_manager: ConfigManager,
+        capture: Optional[Any] = None,
+        detector: Optional[Any] = None,
+        clicker: Optional[Any] = None,
+        animation_detector: Optional[Any] = None,
+        clock: Optional[Any] = None,
+    ):
         self.config_manager = config_manager
-        self.capture = ScreenCapture()
-        self.detector = ColorDetector(
+        self._custom_capture = capture is not None
+        self._custom_detector = detector is not None
+        self._custom_clicker = clicker is not None
+        self._custom_animation_detector = animation_detector is not None
+        self.clock = clock
+
+        self.capture = capture or ScreenCapture()
+        self.detector = detector or ColorDetector(
             color_definitions=self.config_manager.get("color_definitions", {}),
             default_threshold_percent=self.config_manager.get("match_threshold_percent", 1.0)
         )
-        self.clicker = InputSimulator()
-        self.animation_detector = AnimationDetector(
+        self.clicker = clicker or InputSimulator()
+        self.animation_detector = animation_detector or AnimationDetector(
             stable_threshold=self.config_manager.get("anim_stable_threshold", 1.5),
             min_stable_frames=self.config_manager.get("anim_stable_frames", 2)
         )
@@ -218,6 +236,7 @@ class AutoClickEngine:
         self._pause_event.set()
 
         self.current_roll_count = 0
+        self._consecutive_capture_errors = 0
         # Tracks which slot IDs are locked (discovered Purple etc., skip them)
         self._locked_slots: set = set()
 
@@ -259,17 +278,24 @@ class AutoClickEngine:
                 pass
 
     def reload_config(self):
-        """Reload runtime config từ ConfigManager (gọi được khi đang chạy)."""
-        self.detector.update_definitions(
-            self.config_manager.get("color_definitions", {}),
-            self.config_manager.get("match_threshold_percent", 1.0)
-        )
+        """Reload runtime config từ ConfigManager."""
+        if not self._custom_detector:
+            self.detector.update_definitions(
+                self.config_manager.get("color_definitions", {}),
+                self.config_manager.get("match_threshold_percent", 1.0)
+            )
         self.rule_engine = RuleEngine.from_config(self.config_manager)
-        self.animation_detector = AnimationDetector(
-            stable_threshold=self.config_manager.get("anim_stable_threshold", 1.5),
-            min_stable_frames=self.config_manager.get("anim_stable_frames", 2)
-        )
-        self.budget_guard = self._build_budget_guard()
+        if not self._custom_animation_detector:
+            self.animation_detector = AnimationDetector(
+                stable_threshold=self.config_manager.get("anim_stable_threshold", 1.5),
+                min_stable_frames=self.config_manager.get("anim_stable_frames", 2)
+            )
+        old_guard = getattr(self, "budget_guard", None)
+        new_guard = self._build_budget_guard()
+        if old_guard and old_guard._baseline_brightness is not None:
+            if (old_guard.btn_x, old_guard.btn_y) == (new_guard.btn_x, new_guard.btn_y):
+                new_guard._baseline_brightness = old_guard._baseline_brightness
+        self.budget_guard = new_guard
 
     def start(self):
         if self.state == EngineState.RUNNING:
@@ -279,9 +305,43 @@ class AutoClickEngine:
             self.resume()
             return
 
-        self._stop_event.clear()
+        targets = self.config_manager.get_target_colors()
+        if not targets:
+            self.log("Loi: Chua chon mau muc tieu (target_colors)! Dung an toan.", "ERROR")
+            self.set_state(EngineState.STOPPED)
+            if self.on_finished:
+                try:
+                    self.on_finished("no_target_color")
+                except Exception:
+                    pass
+            return
+
+        regions = self.config_manager.get_watch_regions()
+        if not regions:
+            self.log("Loi: Chua cau hinh vung quan sat (watch_regions)! Dung an toan.", "ERROR")
+            self.set_state(EngineState.STOPPED)
+            if self.on_finished:
+                try:
+                    self.on_finished("no_region_configured")
+                except Exception:
+                    pass
+            return
+
+        # Snapshot config at start time to ensure immutable execution run
+        self.active_config = copy.deepcopy(self.config_manager.data)
+        self._last_click_pos = None
+
+        # Join old thread if still running (prevent race conditions)
+        if self._thread is not None and self._thread.is_alive():
+            self._stop_event.set()
+            self._thread.join(timeout=2.0)
+
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
         self._pause_event.set()
+
         self.current_roll_count = 0
+        self._consecutive_capture_errors = 0
         self._locked_slots.clear()
         self.animation_detector.reset()
         self.set_state(EngineState.RUNNING)
@@ -323,15 +383,17 @@ class AutoClickEngine:
                 pass
 
     def _sleep_interruptible(self, seconds: float) -> bool:
-        end_time = time.time() + seconds
-        while time.time() < end_time:
+        if self.clock is not None:
+            return self.clock.sleep_interruptible(seconds, self._stop_event)
+        end_time = time.monotonic() + seconds
+        while time.monotonic() < end_time:
             if self._stop_event.is_set():
                 return False
-            time.sleep(0.05)
+            time.sleep(min(0.01, seconds))
         return True
 
     def _wait_for_animation_end(
-        self, region: Dict[str, Any], max_wait: float = 8.0, poll_interval: float = 0.12
+        self, region: Dict[str, Any], max_wait: float = 8.0, poll_interval: float = 0.05
     ) -> bool:
         """
         Chờ đến khi vùng màn hình tĩnh lại (animation kết thúc) hoặc timeout.
@@ -339,20 +401,21 @@ class AutoClickEngine:
         """
         rx, ry, rw, rh = int(region["x"]), int(region["y"]), int(region["w"]), int(region["h"])
         self.animation_detector.reset()
-        start_time = time.time()
-        while time.time() - start_time < max_wait:
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < max_wait:
             if self._stop_event.is_set():
                 return False
             try:
                 frame = self.capture.capture_region(rx, ry, rw, rh)
                 is_stable, change_pct = self.animation_detector.feed(frame)
                 if is_stable:
-                    elapsed = time.time() - start_time
+                    elapsed = time.monotonic() - start_time
                     self.log(f"Animation xong sau {elapsed:.2f}s (change={change_pct:.1f}%)", "DEBUG")
                     return True
-            except Exception:
-                pass
-            time.sleep(poll_interval)
+            except Exception as e:
+                self.log(f"Animation capture check error: {e}", "DEBUG")
+            if not self._sleep_interruptible(poll_interval):
+                return False
         self.log(f"Animation timeout sau {max_wait}s, tiep tuc...", "WARN")
         return True  # timeout but continue anyway
 
@@ -369,10 +432,11 @@ class AutoClickEngine:
 
     def _save_match_screenshot(self, color_name: str) -> Optional[str]:
         try:
-            os.makedirs("screenshots", exist_ok=True)
+            screenshots_dir = os.path.join(get_data_dir(), "screenshots")
+            os.makedirs(screenshots_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             safe_name = "".join(c if c.isalnum() else "_" for c in color_name)
-            path = os.path.abspath(f"screenshots/match_{safe_name}_{timestamp}.png")
+            path = os.path.abspath(os.path.join(screenshots_dir, f"match_{safe_name}_{timestamp}.png"))
             full_img = self.capture.capture_fullscreen()
             self.capture.save_image(full_img, path)
             self.log(f"Da luu anh chup tai: {path}", "INFO")
@@ -394,179 +458,211 @@ class AutoClickEngine:
             except Exception:
                 pass
 
-    def test_single_check(self) -> Dict[str, Any]:
-        """Chụp + phân tích màu 1 lần để kiểm tra, không click roll."""
-        regions = self.config_manager.get_watch_regions()
-        if not regions:
-            return {"error": "Chua cau hinh vung kiem tra (watch_regions)"}
-
-        region = regions[0]
-        x, y, w, h = int(region["x"]), int(region["y"]), int(region["w"]), int(region["h"])
-        target_colors = self.config_manager.get_target_colors()
-        self.log(f"Kiem tra thu vung [{x}, {y}, {w}x{h}] voi mau: {target_colors}...", "INFO")
-
-        img_bgr = self.capture.capture_region(x, y, w, h)
-        analysis = self.detector.analyze_image(
-            img_bgr,
-            target_colors=target_colors,
-            threshold_percent=self.config_manager.get("match_threshold_percent", 1.0)
-        )
-
-        if analysis["detected"]:
-            self.log(f"Phat hien mau muc tieu: {analysis['matched_name']} ({analysis['matched_percent']}%)", "SUCCESS")
-        else:
-            self.log(f"Chua thay mau muc tieu. Ti le hien tai: {analysis['all_percentages']}", "INFO")
-        return analysis
-
     # ──────────────────────────────────────────────────────────────────────────
     # Main Loop
     # ──────────────────────────────────────────────────────────────────────────
 
     def _run_loop(self):
-        roll_btn = self.config_manager.get_roll_button()
-        max_rolls = int(self.config_manager.get("max_rolls", 100))
-        delay = float(self.config_manager.get("delay_between_rolls", 1.5))
-        play_sound = bool(self.config_manager.get("play_sound", True))
-        save_screenshot = bool(self.config_manager.get("save_screenshot", True))
-        use_anim_detect = bool(self.config_manager.get("use_animation_detection", False))
-        anim_max_wait = float(self.config_manager.get("anim_max_wait", 6.0))
+        active_cfg = getattr(self, "active_config", None) or copy.deepcopy(self.config_manager.data)
+        roll_btn = active_cfg.get("roll_button", {"x": 1000, "y": 600})
+        max_rolls = int(active_cfg.get("max_rolls", 100))
+        delay = float(active_cfg.get("delay_between_rolls", 1.5))
+        play_sound = bool(active_cfg.get("play_sound", True))
+        save_screenshot = bool(active_cfg.get("save_screenshot", True))
+        use_anim_detect = bool(active_cfg.get("use_animation_detection", False))
+        anim_max_wait = float(active_cfg.get("anim_max_wait", 6.0))
+        border_only = bool(active_cfg.get("border_only", False))
+        target_window = str(active_cfg.get("target_window_title", "")).strip()
+        guard_mouse = bool(active_cfg.get("guard_mouse_move", True))
 
         self.log(
-            f"Bat dau vong lap | Roll: ({roll_btn['x']},{roll_btn['y']}) "
+            f"Bat dau vong lap | Roll: ({roll_btn.get('x', 0)},{roll_btn.get('y', 0)}) "
             f"| Gioi han: {max_rolls} | Cho: {delay}s "
             f"| Anim detect: {use_anim_detect}",
             "INFO"
         )
 
-        # Budget guard calibration (record baseline brightness of Roll button area)
-        if self.budget_guard.enabled:
-            self.budget_guard.calibrate(self.capture)
-            self.log("Budget guard: Da ghi nhan do sang ban dau cua nut Roll.", "INFO")
+        finish_reason = "normal_exit"
 
-        regions = self.config_manager.get_watch_regions()
-        if not regions:
-            self.log("Chua cau hinh vung quan sat! Dung tien trinh.", "ERROR")
-            self.stop("no_region_configured")
-            return
-
-        while not self._stop_event.is_set():
-            # ── Handle pause ──
-            self._pause_event.wait()
-            if self._stop_event.is_set():
-                break
-
-            # ── Budget check BEFORE clicking ──
-            if self.budget_guard.enabled and self.budget_guard.is_out_of_budget(self.capture):
-                self.log("CANH BAO: Phat hien nut Roll bi mo/disabled! Co the het tien. Dung an toan.", "WARN")
-                self.stop("out_of_budget")
-                break
-
-            # ── Max roll limit check ──
-            if self.current_roll_count >= max_rolls:
-                self.log(f"Da dat so lan roll toi da ({max_rolls}). Dung an toan.", "WARN")
-                self.stop("max_rolls_reached")
-                break
-
-            # ── MULTI-SLOT SCAN ──
-            # Scan all regions; track per-slot actions
-            all_locked = True   # assume all locked until we find one not locked
-            should_stop = False
-
-            for region in regions:
-                slot_id = region.get("id", "slot_0")
-
-                # Skip already locked slots
-                if slot_id in self._locked_slots:
-                    continue
-
-                all_locked = False  # at least one slot still active
-
-                rx, ry, rw, rh = int(region["x"]), int(region["y"]), int(region["w"]), int(region["h"])
+        try:
+            # Budget guard calibration (record baseline brightness of Roll button area)
+            if self.budget_guard.enabled:
                 try:
-                    img_bgr = self.capture.capture_region(rx, ry, rw, rh)
+                    self.budget_guard.calibrate(self.capture)
+                    self.log("Budget guard: Da ghi nhan do sang ban dau cua nut Roll.", "INFO")
                 except Exception as e:
-                    self.log(f"Loi chup man hinh slot {slot_id}: {e}", "ERROR")
+                    self.log(f"Budget guard calibrate that bai: {e}", "WARN")
+
+            regions = active_cfg.get("watch_regions", [])
+            if not regions:
+                self.log("Chua cau hinh vung quan sat! Dung tien trinh.", "ERROR")
+                finish_reason = "no_region_configured"
+                return
+
+            self._consecutive_capture_errors = 0
+
+            while not self._stop_event.is_set():
+                # ── Handle pause ──
+                self._pause_event.wait()
+                if self._stop_event.is_set():
+                    finish_reason = "user_stopped"
+                    break
+
+                # ── Check foreground window if configured ──
+                if target_window and not WindowGuard.is_target_window_active(target_window):
+                    self.log(f"Cua so game '{target_window}' khong con o Foreground. Tu dong tam dung an toan.", "WARN")
+                    self.pause()
                     continue
 
-                target_colors = self.config_manager.get_target_colors()
-                analysis = self.detector.analyze_image(img_bgr, target_colors=target_colors)
+                # ── Check user mouse manual intervention ──
+                if guard_mouse and self._last_click_pos is not None:
+                    curr_mouse = self.clicker.get_mouse_position()
+                    if WindowGuard.is_user_interfering(self._last_click_pos, curr_mouse):
+                        self.log("Phat hien nguoi dung dang di chuot! Tu dong tam dung de tranh xung dot.", "WARN")
+                        self.pause()
+                        continue
 
-                if self.on_roll_attempt:
+                # ── 1. MULTI-SLOT SCAN (Always scan before checking limits or rolling) ──
+                target_colors = active_cfg.get("target_colors", [])
+                should_stop = False
+                capture_failed_this_cycle = False
+
+                for region in regions:
+                    slot_id = region.get("id", "slot_0")
+
+                    # Skip already locked slots
+                    if slot_id in self._locked_slots:
+                        continue
+
+                    rx, ry, rw, rh = int(region["x"]), int(region["y"]), int(region["w"]), int(region["h"])
                     try:
-                        self.on_roll_attempt(self.current_roll_count, analysis)
-                    except Exception:
-                        pass
+                        img_bgr = self.capture.capture_region(rx, ry, rw, rh)
+                        self._consecutive_capture_errors = 0
+                    except Exception as e:
+                        self._consecutive_capture_errors += 1
+                        self.log(f"Loi chup man hinh slot {slot_id} ({self._consecutive_capture_errors}/3): {e}", "ERROR")
+                        if self._consecutive_capture_errors >= 3:
+                            self.log("Mat thi giac/chup man hinh that bai lien tiep. Dung an toan fail-safe!", "ERROR")
+                            finish_reason = "capture_failed"
+                            should_stop = True
+                            break
+                        capture_failed_this_cycle = True
+                        continue
 
-                if not analysis["detected"]:
+                    analysis = self.detector.analyze_image(img_bgr, target_colors=target_colors, border_only=border_only)
+
+                    if self.on_roll_attempt:
+                        try:
+                            self.on_roll_attempt(self.current_roll_count, analysis)
+                        except Exception:
+                            pass
+
+                    if not analysis["detected"]:
+                        continue
+
+                    # ── Color detected in this slot — evaluate rule ──
+                    action = self.rule_engine.evaluate(analysis)
+                    color_name = analysis.get("matched_name") or analysis.get("matched_color", "unknown")
+                    percent = analysis.get("matched_percent", 0.0)
+
+                    if action == SlotAction.STOP:
+                        self._fire_target_found(color_name, percent, save_screenshot, play_sound)
+                        finish_reason = "target_color_found"
+                        should_stop = True
+                        break
+
+                    elif action == SlotAction.LOCK:
+                        self._locked_slots.add(slot_id)
+                        self.log(f"LOCK slot {slot_id}: Phat hien {color_name} ({percent}%). Giu slot nay, tiep tuc roll cac slot con lai.", "SUCCESS")
+                        if play_sound:
+                            try:
+                                if winsound:
+                                    winsound.Beep(800, 200)
+                            except Exception:
+                                pass
+                        if self.on_slot_locked:
+                            try:
+                                self.on_slot_locked(slot_id, color_name)
+                            except Exception:
+                                pass
+                        if save_screenshot:
+                            self._save_match_screenshot(f"lock_{slot_id}_{color_name}")
+
+                if should_stop:
+                    break
+
+                if capture_failed_this_cycle:
+                    if not self._sleep_interruptible(0.2):
+                        finish_reason = "user_stopped"
+                        break
                     continue
 
-                # ── Color detected in this slot — evaluate rule ──
-                action = self.rule_engine.evaluate(analysis)
-                color_name = analysis.get("matched_name") or analysis.get("matched_color", "unknown")
-                percent = analysis.get("matched_percent", 0.0)
-
-                if action == SlotAction.STOP:
-                    self._fire_target_found(color_name, percent, save_screenshot, play_sound)
-                    self.stop("target_color_found")
-                    should_stop = True
+                # ── 2. RE-CALCULATE all_locked IMMEDIATELY AFTER SCANNING ──
+                all_locked_now = len(regions) > 0 and all(r.get("id", f"slot_{i}") in self._locked_slots for i, r in enumerate(regions))
+                if all_locked_now:
+                    self.log("Tat ca cac slot da bi LOCK! Dung hoat dong.", "SUCCESS")
+                    self._fire_target_found("all_slots_locked", 100.0, save_screenshot, play_sound)
+                    finish_reason = "all_slots_locked"
                     break
 
-                elif action == SlotAction.LOCK:
-                    self._locked_slots.add(slot_id)
-                    self.log(f"LOCK slot {slot_id}: Phat hien {color_name} ({percent}%). Giu slot nay, tiep tuc roll cac slot con lai.", "SUCCESS")
-                    if play_sound:
-                        # Short 1-beep notification for lock
-                        try:
-                            if winsound:
-                                winsound.Beep(800, 200)
-                        except Exception:
-                            pass
-                    if self.on_slot_locked:
-                        try:
-                            self.on_slot_locked(slot_id, color_name)
-                        except Exception:
-                            pass
-                    # Also save screenshot on lock event
-                    if save_screenshot:
-                        self._save_match_screenshot(f"lock_{slot_id}_{color_name}")
-
-            if should_stop:
-                break
-
-            # If all slots are locked, we're done
-            if all_locked and len(regions) > 0:
-                self.log("Tat ca cac slot da bi LOCK! Dung hoat dong.", "SUCCESS")
-                self._fire_target_found("all_slots_locked", 100.0, save_screenshot, play_sound)
-                self.stop("all_slots_locked")
-                break
-
-            # ── Click Roll ──
-            self.current_roll_count += 1
-            self.log(f"Roll lan {self.current_roll_count}/{max_rolls} -> Click Roll...", "DEBUG")
-
-            click_success = self.clicker.click(roll_btn["x"], roll_btn["y"])
-            if not click_success:
-                self.log("Khong the click vao nut Roll. Dung an toan.", "ERROR")
-                self.stop("click_failed")
-                break
-
-            # ── Wait for animation to finish (if enabled) ──
-            random_offset_ms = float(self.config_manager.get("delay_random_offset_ms", 0))
-
-            if use_anim_detect and regions:
-                self._wait_for_animation_end(regions[0], max_wait=anim_max_wait)
-                extra = 0.2
-                if random_offset_ms > 0:
-                    import random
-                    extra = max(0.05, 0.2 + random.uniform(-random_offset_ms / 2, random_offset_ms / 2) / 1000.0)
-                self._sleep_interruptible(extra)
-            else:
-                # Fixed delay fallback with random offset jitter
-                actual_delay = delay
-                if random_offset_ms > 0:
-                    import random
-                    jitter = random.uniform(-random_offset_ms, random_offset_ms) / 1000.0
-                    actual_delay = max(0.05, delay + jitter)
-                if not self._sleep_interruptible(actual_delay):
+                # ── 3. CHECK LIMITS AFTER SCAN (budget & max_rolls) ──
+                if self.budget_guard.enabled and self.budget_guard.is_out_of_budget(self.capture):
+                    self.log("CANH BAO: Phat hien nut Roll bi mo/disabled! Co the het tien. Dung an toan.", "WARN")
+                    finish_reason = "out_of_budget"
                     break
+
+                if self.current_roll_count >= max_rolls:
+                    self.log(f"Da dat so lan roll toi da ({max_rolls}). Dung an toan.", "WARN")
+                    finish_reason = "max_rolls_reached"
+                    break
+
+                # ── 4. CLICK ROLL ──
+                self.current_roll_count += 1
+                self.log(f"Roll lan {self.current_roll_count}/{max_rolls} -> Click Roll...", "DEBUG")
+
+                click_success = self.clicker.click(roll_btn["x"], roll_btn["y"])
+                if not click_success:
+                    self.log("Khong the click vao nut Roll. Dung an toan.", "ERROR")
+                    finish_reason = "click_failed"
+                    break
+                self._last_click_pos = (int(roll_btn["x"]), int(roll_btn["y"]))
+
+                # ── 5. WAIT SETTLED (Animation or delay) ──
+                random_offset_ms = float(active_cfg.get("delay_random_offset_ms", 0))
+
+                if use_anim_detect and regions:
+                    settled = self._wait_for_animation_end(regions[0], max_wait=anim_max_wait)
+                    if not settled and self._stop_event.is_set():
+                        finish_reason = "user_stopped"
+                        break
+                    extra = 0.2
+                    if random_offset_ms > 0:
+                        import random
+                        extra = max(0.05, 0.2 + random.uniform(-random_offset_ms / 2, random_offset_ms / 2) / 1000.0)
+                    if not self._sleep_interruptible(extra):
+                        finish_reason = "user_stopped"
+                        break
+                else:
+                    actual_delay = delay
+                    if random_offset_ms > 0:
+                        import random
+                        jitter = random.uniform(-random_offset_ms, random_offset_ms) / 1000.0
+                        actual_delay = max(0.05, delay + jitter)
+                    if not self._sleep_interruptible(actual_delay):
+                        finish_reason = "user_stopped"
+                        break
+
+        except Exception as e:
+            self.log(f"Loi nghiem trong trong vong lap Engine: {e}", "ERROR")
+            finish_reason = f"error: {e}"
+        finally:
+            self.set_state(EngineState.STOPPED)
+            self._stop_event.set()
+            self._pause_event.set()
+            if self.on_finished:
+                try:
+                    self.on_finished(finish_reason)
+                except Exception:
+                    pass
+            self.log(f"Tien trinh ket thuc. Ly do: {finish_reason}", "INFO")
 

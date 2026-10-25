@@ -3,13 +3,7 @@ import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 
 
-BUILTIN_COLORS = {
-    "purple": {"name": "Tím (Epic)", "h_min": 125, "h_max": 160, "s_min": 50, "s_max": 255, "v_min": 50, "v_max": 255},
-    "red": {"name": "Đỏ (Mythic)", "h_min": 0, "h_max": 10, "h2_min": 170, "h2_max": 180, "s_min": 70, "s_max": 255, "v_min": 50, "v_max": 255},
-    "gold": {"name": "Vàng (Legendary)", "h_min": 18, "h_max": 35, "s_min": 75, "s_max": 255, "v_min": 75, "v_max": 255},
-    "blue": {"name": "Xanh dương (Rare)", "h_min": 95, "h_max": 125, "s_min": 60, "s_max": 255, "v_min": 50, "v_max": 255},
-    "green": {"name": "Xanh lá (Uncommon)", "h_min": 35, "h_max": 85, "s_min": 60, "s_max": 255, "v_min": 50, "v_max": 255},
-}
+from core.config_manager import DEFAULT_COLOR_DEFINITIONS as BUILTIN_COLORS
 
 
 class ColorDetector:
@@ -32,21 +26,21 @@ class ColorDetector:
 
     def _create_color_mask(self, hsv_img: np.ndarray, color_rule: Dict[str, Any]) -> np.ndarray:
         """Creates a binary mask where pixels matching the HSV range are 255."""
-        h_min = int(color_rule.get("h_min", 0))
-        h_max = int(color_rule.get("h_max", 180))
-        s_min = int(color_rule.get("s_min", 0))
-        s_max = int(color_rule.get("s_max", 255))
-        v_min = int(color_rule.get("v_min", 0))
-        v_max = int(color_rule.get("v_max", 255))
+        h_min = max(0, min(179, int(color_rule.get("h_min", 0))))
+        h_max = max(0, min(179, int(color_rule.get("h_max", 179))))
+        s_min = max(0, min(255, int(color_rule.get("s_min", 0))))
+        s_max = max(0, min(255, int(color_rule.get("s_max", 255))))
+        v_min = max(0, min(255, int(color_rule.get("v_min", 0))))
+        v_max = max(0, min(255, int(color_rule.get("v_max", 255))))
 
         lower = np.array([h_min, s_min, v_min], dtype=np.uint8)
         upper = np.array([h_max, s_max, v_max], dtype=np.uint8)
         mask = cv2.inRange(hsv_img, lower, upper)
 
-        # Handling wrap-around for colors like Red (0-10 and 170-180)
+        # Handling wrap-around for colors like Red (0-10 and 170-179)
         if "h2_min" in color_rule and "h2_max" in color_rule:
-            h2_min = int(color_rule["h2_min"])
-            h2_max = int(color_rule["h2_max"])
+            h2_min = max(0, min(179, int(color_rule["h2_min"])))
+            h2_max = max(0, min(179, int(color_rule["h2_max"])))
             lower2 = np.array([h2_min, s_min, v_min], dtype=np.uint8)
             upper2 = np.array([h2_max, s_max, v_max], dtype=np.uint8)
             mask2 = cv2.inRange(hsv_img, lower2, upper2)
@@ -102,16 +96,31 @@ class ColorDetector:
             if border_mask is not None:
                 mask = cv2.bitwise_and(mask, border_mask)
 
-            matched_count = cv2.countNonZero(mask)
+            # Filter out single-pixel noise / small speckles
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            mask_clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+            matched_count = cv2.countNonZero(mask_clean)
             percent = (matched_count / total_active_pixels) * 100.0
+
+            # Confidence calculation (0.0 to 1.0)
+            confidence = min(1.0, percent / max(0.1, threshold_percent * 2.0))
+            if percent >= threshold_percent:
+                decision = "CONFIDENT"
+            elif percent >= threshold_percent * 0.4:
+                decision = "UNCERTAIN"
+            else:
+                decision = "NO"
 
             matches[color_key] = {
                 "matched": (percent >= threshold_percent),
                 "percent": round(percent, 2),
                 "count": matched_count,
+                "confidence": round(confidence, 2),
+                "decision": decision,
                 "name": rule.get("name", color_key),
             }
-            masks[color_key] = mask
+            masks[color_key] = mask_clean
 
         return matches, masks
 
@@ -133,6 +142,8 @@ class ColorDetector:
                 "matched_color": None,
                 "matched_name": None,
                 "matched_percent": 0.0,
+                "confidence": 0.0,
+                "decision": "NO",
                 "all_percentages": {},
                 "total_pixels": 0
             }
@@ -144,16 +155,33 @@ class ColorDetector:
         primary_match_color = None
         primary_match_name = None
         highest_percent = 0.0
+        best_priority = 999
+        primary_confidence = 0.0
+        primary_decision = "NO"
+
+        # Tier priority: lower number = rarer = higher priority
+        COLOR_PRIORITY = {
+            "red": 1,
+            "gold": 2,
+            "purple": 3,
+            "blue": 4,
+            "green": 5
+        }
 
         for color_key, m in matches.items():
             pct = m["percent"]
             all_percentages[color_key] = pct
             if m["matched"]:
                 detected = True
-                if pct > highest_percent:
+                prio = COLOR_PRIORITY.get(color_key, 50)
+                # Select rarer tier first; if same tier, select higher percentage
+                if prio < best_priority or (prio == best_priority and pct > highest_percent):
+                    best_priority = prio
                     highest_percent = pct
                     primary_match_color = color_key
                     primary_match_name = m["name"]
+                    primary_confidence = m["confidence"]
+                    primary_decision = m["decision"]
 
         h, w = img_bgr.shape[:2]
         return {
@@ -161,26 +189,26 @@ class ColorDetector:
             "matched_color": primary_match_color,
             "matched_name": primary_match_name,
             "matched_percent": round(highest_percent, 2),
+            "confidence": primary_confidence,
+            "decision": primary_decision,
             "all_percentages": all_percentages,
             "total_pixels": h * w
         }
 
-    def get_annotated_result(self, img_bgr: np.ndarray, matched_color: str) -> np.ndarray:
+    def get_annotated_result(self, img_bgr: np.ndarray, matched_color: str, border_only: bool = False) -> np.ndarray:
         """Returns image with bounding boxes around detected color patches for visual proof."""
         if matched_color not in self.color_definitions or img_bgr is None:
             return img_bgr
 
         annotated = img_bgr.copy()
-        hsv = cv2.cvtColor(annotated, cv2.COLOR_BGR2HSV)
-        rule = self.color_definitions[matched_color]
-        mask = self._create_color_mask(hsv, rule)
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        mask_clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        matches, masks = self.detect_colors(img_bgr, [matched_color], threshold_percent=0.1, border_only=border_only)
+        mask_clean = masks.get(matched_color)
+        if mask_clean is None:
+            return annotated
 
         contours, _ = cv2.findContours(mask_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
-            if cv2.contourArea(cnt) > 20:
+            if cv2.contourArea(cnt) >= 15:
                 x, y, w, h = cv2.boundingRect(cnt)
                 cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 2)
 

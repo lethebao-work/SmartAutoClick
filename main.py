@@ -33,7 +33,7 @@ def setup_global_hotkeys(window: MainWindow):
 
         def on_f6():
             print(f"[Hotkey] Đã nhấn {key_start_pause.upper()} -> Bật/Tạm dừng")
-            window.engine.toggle_pause()
+            window.validate_and_toggle_pause()
 
         def on_f7():
             print(f"[Hotkey] Đã nhấn {key_stop.upper()} -> Dừng khẩn cấp")
@@ -46,7 +46,22 @@ def setup_global_hotkeys(window: MainWindow):
         print(f"[Hotkey] Cảnh báo khi đăng ký phím tắt (yêu cầu quyền Admin trên một số máy Windows): {e}")
 
 
+def get_resource_path(relative_path: str) -> str:
+    """Trả về đường dẫn tài nguyên (tương thích cả khi chạy script và đóng gói PyInstaller)."""
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(get_base_dir(), relative_path)
+
+
 def main():
+    # Kích hoạt DPI Awareness V2 trước khi khởi tạo Qt App để tọa độ không bị lệch khi scale 125%/150%
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.setApplicationName("Smart Auto Click")
     app.setOrganizationName("SmartAutoClick")
@@ -54,7 +69,7 @@ def main():
     app.setQuitOnLastWindowClosed(False)
 
     base_dir = get_base_dir()
-    ico_path = os.path.join(base_dir, "assets", "icon.ico")
+    ico_path = get_resource_path(os.path.join("assets", "icon.ico"))
     if os.path.exists(ico_path):
         app.setWindowIcon(QIcon(ico_path))
 
@@ -63,6 +78,21 @@ def main():
 
     window = MainWindow(config_manager)
     window.show()
+
+    # Kiểm tra quyền Admin (UIPI) để cảnh báo người dùng nếu game chạy Admin
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+            if not is_admin:
+                window.append_log(
+                    "[LƯU Ý QUYỀN] Ứng dụng đang chạy ở quyền User thường. Nếu Game của bạn chạy bằng 'Run as Administrator', hãy mở SmartAutoClick bằng Administrator để không bị Windows UIPI chặn click chuột.",
+                    "WARN"
+                )
+            else:
+                window.append_log("Đang chạy với quyền Administrator (Toàn quyền tương tác phím/chuột).", "INFO")
+        except Exception:
+            pass
 
     # Thiết lập phím tắt toàn cục F6/F7
     setup_global_hotkeys(window)

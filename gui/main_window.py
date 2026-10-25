@@ -593,7 +593,7 @@ class MainWindow(QMainWindow):
     # ──────────────────────────────────────────────────────────────────────────
 
     def init_ui(self):
-        self.setWindowTitle("Smart Auto Click v2.4 — Conditional Auto Clicker")
+        self.setWindowTitle("Smart Auto Click v2.0 — Conditional Auto Clicker")
         self.resize(1020, 850)
         self.setMinimumSize(940, 740)
         self.setStyleSheet(DARK_STYLESHEET)
@@ -615,7 +615,7 @@ class MainWindow(QMainWindow):
         lbl_title.setStyleSheet("color: #C0C1FF; letter-spacing: 0.5px;")
         title_box.addWidget(lbl_title)
 
-        lbl_ver = QLabel("v2.4")
+        lbl_ver = QLabel("v2.0")
         lbl_ver.setStyleSheet("background-color: #312E81; color: #C0C1FF; font-size: 10px; font-weight: bold; padding: 2px 7px; border-radius: 4px;")
         title_box.addWidget(lbl_ver)
         header.addLayout(title_box)
@@ -640,6 +640,11 @@ class MainWindow(QMainWindow):
         btn_save_profile.setToolTip("Lưu cấu hình hiện tại thành Profile mới")
         btn_save_profile.clicked.connect(self._save_current_as_profile)
         header.addWidget(btn_save_profile)
+
+        btn_del_profile = QPushButton("✕ Xóa")
+        btn_del_profile.setToolTip("Xóa profile đang chọn")
+        btn_del_profile.clicked.connect(self._delete_current_profile)
+        header.addWidget(btn_del_profile)
 
         # Save Config Button in Header
         self.btn_save_cfg = QPushButton("💾 Lưu cấu hình")
@@ -851,8 +856,13 @@ class MainWindow(QMainWindow):
             gr.addWidget(lbl, i+1, 0)
 
             cmb = QComboBox()
-            cmb.addItem("stop — Dừng ngay lập tức", "stop")
-            cmb.addItem("lock — Khóa slot này, tiếp tục roll", "lock")
+            cmb.addItem("stop — Dừng ngay lập tức (Khuyến nghị)", "stop")
+            cmb.addItem("skip/lock — Bỏ qua slot này phía bot (Tiếp tục roll các ô khác)", "lock")
+            cmb.setToolTip(
+                "Lưu ý với 'skip/lock': Bot chỉ bỏ qua việc quét ô này và roll các ô còn lại.\n"
+                "Game vẫn có thể ghi đè nếu game roll đồng thời cả bộ slot!\n"
+                "Hãy chọn 'stop' nếu game không hỗ trợ khóa từng ô riêng biệt."
+            )
             self._rule_combos[key] = cmb
             gr.addWidget(cmb, i+1, 1)
 
@@ -1396,10 +1406,10 @@ class MainWindow(QMainWindow):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _refresh_profiles_combo(self):
-        profiles = self.config_manager.get("profiles", {})
+        profiles = self.config_manager.list_profiles()
         self.cmb_profile.blockSignals(True)
         self.cmb_profile.clear()
-        for name in profiles.keys():
+        for name in profiles:
             self.cmb_profile.addItem(name)
         active = self.config_manager.get("active_profile", "default")
         idx = self.cmb_profile.findText(active)
@@ -1408,48 +1418,41 @@ class MainWindow(QMainWindow):
         self.cmb_profile.blockSignals(False)
 
     def _on_profile_changed(self, name: str):
-        profiles = self.config_manager.get("profiles", {})
-        if name not in profiles:
+        if not name:
             return
-        p = profiles[name]
-        if "roll_button" in p:
-            rb = p["roll_button"]
-            self.spin_roll_x.setValue(rb.get("x", 1000))
-            self.spin_roll_y.setValue(rb.get("y", 600))
-        if "target_colors" in p:
-            targets = p["target_colors"]
-            self.chk_purple.setChecked("purple" in targets)
-            self.chk_red.setChecked("red" in targets)
-            self.chk_gold.setChecked("gold" in targets)
-            self.chk_blue.setChecked("blue" in targets)
-            self.chk_green.setChecked("green" in targets)
-        self.config_manager.set("active_profile", name, auto_save=True)
-        self.append_log(f"Da chuyen sang profile: {name}", "INFO")
+        loaded = self.config_manager.load_profile(name)
+        if loaded:
+            self.load_config_to_ui()
+            self.append_log(f"Da chuyen sang profile: {name} (tai day du thong so)", "INFO")
 
     def _save_current_as_profile(self):
         name, ok = QInputDialog.getText(self, "Luu Profile", "Nhap ten profile moi:")
         if not ok or not name.strip():
             return
         name = name.strip()
-        targets = []
-        if self.chk_purple.isChecked(): targets.append("purple")
-        if self.chk_red.isChecked(): targets.append("red")
-        if self.chk_gold.isChecked(): targets.append("gold")
-        if self.chk_blue.isChecked(): targets.append("blue")
-        if self.chk_green.isChecked(): targets.append("green")
+        # Lưu giao diện hiện tại vào cấu hình trước
+        self.save_ui_to_config(show_msg=False)
+        success = self.config_manager.save_profile(name)
+        if success:
+            self._refresh_profiles_combo()
+            idx = self.cmb_profile.findText(name)
+            if idx >= 0:
+                self.cmb_profile.setCurrentIndex(idx)
+            self.append_log(f"Da luu toan bo cau hinh vao profile: {name}", "SUCCESS")
+        else:
+            self.append_log(f"Khong the luu profile: {name}", "ERROR")
 
-        profiles = self.config_manager.get("profiles", {})
-        profiles[name] = {
-            "name": name,
-            "roll_button": {"x": self.spin_roll_x.value(), "y": self.spin_roll_y.value()},
-            "target_colors": targets,
-        }
-        self.config_manager.set("profiles", profiles, auto_save=True)
-        self._refresh_profiles_combo()
-        idx = self.cmb_profile.findText(name)
-        if idx >= 0:
-            self.cmb_profile.setCurrentIndex(idx)
-        self.append_log(f"Da luu profile moi: {name}", "SUCCESS")
+    def _delete_current_profile(self):
+        name = self.cmb_profile.currentText()
+        if not name or name == "default":
+            QMessageBox.information(self, "Thong bao", "Khong the xoa profile mac dinh (default).")
+            return
+        reply = QMessageBox.question(self, "Xac nhan", f"Ban co chac muon xoa profile '{name}'?", QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self.config_manager.delete_profile(name)
+            self._refresh_profiles_combo()
+            self.load_config_to_ui()
+            self.append_log(f"Da xoa profile: {name}", "INFO")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Countdown (pick mouse position)
@@ -1523,18 +1526,36 @@ class MainWindow(QMainWindow):
         )
         dlg.exec()
 
-    @Slot()
-    def on_btn_start_clicked(self):
+    def validate_and_start(self) -> bool:
+        """Kiểm tra cấu hình, lưu UI và khởi động Engine nếu hợp lệ."""
+        if hasattr(self, "macro_player") and self.macro_player.is_playing:
+            QMessageBox.warning(self, "Xung đột tiến trình", "Macro đang phát lại! Vui lòng dừng Macro trước khi khởi động Auto Clicker.")
+            return False
+
         self.save_ui_to_config(show_msg=False)
         targets = self.config_manager.get_target_colors()
         if not targets:
-            QMessageBox.warning(self, "Canh bao", "Vui long chon it nhat 1 mau muc tieu!")
-            return
+            QMessageBox.warning(self, "Cảnh báo", "Vui lòng chọn ít nhất 1 màu mục tiêu!")
+            return False
         regions = self.config_manager.get_watch_regions()
         if not regions:
-            QMessageBox.warning(self, "Canh bao", "Vui long cau hinh it nhat 1 vung quan sat!")
-            return
+            QMessageBox.warning(self, "Cảnh báo", "Vui lòng cấu hình ít nhất 1 vùng quan sát!")
+            return False
         self.engine.start()
+        return True
+
+    def validate_and_toggle_pause(self):
+        """Dùng chung cho phím tắt F6 và nút Start/Pause trên GUI."""
+        if self.engine.state in (EngineState.IDLE, EngineState.STOPPED):
+            self.validate_and_start()
+        elif self.engine.state == EngineState.RUNNING:
+            self.engine.pause()
+        elif self.engine.state == EngineState.PAUSED:
+            self.engine.resume()
+
+    @Slot()
+    def on_btn_start_clicked(self):
+        self.validate_and_start()
 
     @Slot()
     def on_btn_pause_clicked(self):
@@ -1776,28 +1797,32 @@ class MainWindow(QMainWindow):
         self.lbl_macro_count.setText(f"Tong so buoc: {len(self.macro_steps)}")
 
     def _toggle_macro_play(self):
+        if self.engine.state == EngineState.RUNNING:
+            QMessageBox.warning(self, "Xung đột tiến trình", "Auto Clicker đang chạy! Vui lòng dừng Engine trước khi phát macro.")
+            return
+
         if not self.macro_steps:
-            QMessageBox.warning(self, "Thong bao", "Chua co thao tac nao de phat! Hay bam Ghi hoac Nap tu file.")
+            QMessageBox.warning(self, "Thông báo", "Chưa có thao tác nào để phát! Hãy bấm Ghi hoặc Nạp từ file.")
             return
 
         if not self.macro_player.is_playing:
             speed = float(self.cmb_macro_speed.currentData())
             loops = self.spin_macro_loop.value()
             inf = self.chk_macro_inf.isChecked()
-            self.btn_macro_play.setText("⏸ Tam dung phat")
-            self.append_log(f"Bat dau phat lai macro (Toc do {speed}x, Lap: {'Vo han' if inf else loops} lan)...", "INFO")
+            self.btn_macro_play.setText("⏸ Tạm dừng phát")
+            self.append_log(f"Bắt đầu phát lại macro (Tốc độ {speed}x, Lặp: {'Vô hạn' if inf else loops} lần)...", "INFO")
             self.macro_player.play(self.macro_steps, speed=speed, loop_count=loops, infinite=inf)
         else:
             self.macro_player.stop()
             self.btn_macro_play.setText("▶ Phát lại Macro")
-            self.append_log("Da dung phat lai macro.", "WARN")
+            self.append_log("Đã dừng phát lại macro.", "WARN")
 
     def _on_macro_step_played(self, idx: int, step: Dict[str, Any]):
         QTimer.singleShot(0, lambda: self.lst_macro.setCurrentRow(idx % max(1, self.lst_macro.count())))
 
     def _on_macro_finished(self):
         QTimer.singleShot(0, lambda: self.btn_macro_play.setText("▶ Phát lại Macro"))
-        self.append_log("Da hoan thanh chuoi phat macro.", "SUCCESS")
+        self.append_log("Đã hoàn thành chuỗi phát macro.", "SUCCESS")
 
     def _stop_macro_all(self):
         if self.macro_recorder.is_recording:
@@ -1805,49 +1830,62 @@ class MainWindow(QMainWindow):
         if self.macro_player.is_playing:
             self.macro_player.stop()
             self.btn_macro_play.setText("▶ Phát lại Macro")
-            self.append_log("Da dung phat macro.", "INFO")
+            self.append_log("Đã dừng phát macro.", "INFO")
 
     def _clear_macro_steps(self):
         self._stop_macro_all()
         self.macro_steps.clear()
         self._refresh_macro_list()
-        self.append_log("Da xoa toan bo cac buoc macro.", "INFO")
+        self.append_log("Đã xóa toàn bộ các bước macro.", "INFO")
 
     def _save_macro_file(self):
         if not self.macro_steps:
-            QMessageBox.warning(self, "Thong bao", "Khong co buoc nao de luu!")
+            QMessageBox.warning(self, "Thông báo", "Không có bước nào để lưu!")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Luu Macro Thao Tac", "macro.json", "JSON Files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Lưu Macro Thao Tác", "macro.json", "JSON Files (*.json)")
         if path:
             if save_macro(path, self.macro_steps):
-                self.append_log(f"Da luu macro vao: {path}", "SUCCESS")
-                QMessageBox.information(self, "Thanh cong", "Da luu macro thanh cong!")
+                self.append_log(f"Đã lưu macro vào: {path}", "SUCCESS")
+                QMessageBox.information(self, "Thành công", "Đã lưu macro thành công!")
 
     def _load_macro_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Mo Macro Thao Tac", "", "JSON Files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Mở Macro Thao Tác", "", "JSON Files (*.json)")
         if path:
             steps = load_macro(path)
             if steps:
                 self.macro_steps = steps
                 self._refresh_macro_list()
-                self.append_log(f"Da nap {len(steps)} buoc macro tu: {path}", "SUCCESS")
+                self.append_log(f"Đã nạp {len(steps)} bước macro từ: {path}", "SUCCESS")
             else:
-                QMessageBox.warning(self, "Loi", "File macro rong hoac khong dung dinh dang!")
+                QMessageBox.warning(self, "Lỗi", "File macro rỗng hoặc không đúng định dạng!")
 
     def closeEvent(self, event):
         if not self._is_really_quitting:
+            if self.engine.state == EngineState.RUNNING:
+                reply = QMessageBox.question(
+                    self,
+                    "Cảnh báo: Clicker đang chạy ngầm",
+                    "Auto Clicker vẫn ĐANG CHẠY ngầm và gửi click vào màn hình!\n\n"
+                    "Bạn có chắc muốn ẩn xuống khay hệ thống và TIẾP TỤC chạy không?\n"
+                    "(Bấm 'No' để DỪNG clicker an toàn trước khi ẩn)",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.No:
+                    self.engine.stop("Người dùng dừng khi đóng cửa sổ")
+
             event.ignore()
             self.hide()
             if hasattr(self, "tray_icon") and self.tray_icon:
                 self.tray_icon.showMessage(
                     "Smart Auto Click",
-                    "Ung dung van dang chay o khay he thong (Taskbar).\nBam vao bieu tuong de mo lai.",
+                    "Ứng dụng đang chạy ở khay hệ thống (Taskbar).\nBấm vào biểu tượng để mở lại.",
                     QSystemTrayIcon.Information,
                     2000
                 )
         else:
             if self.engine.state == EngineState.RUNNING:
-                self.engine.stop("Dong ung dung")
+                self.engine.stop("Đóng ứng dụng")
             if self.macro_player.is_playing:
                 self.macro_player.stop()
             self.engine.capture.close()
