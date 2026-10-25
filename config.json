@@ -1,0 +1,115 @@
+{
+  "version": "2.0",
+  "active_profile": "default",
+  "roll_button": {
+    "x": 1000,
+    "y": 600
+  },
+  "watch_regions": [
+    {
+      "id": "slot_1",
+      "name": "Slot 1",
+      "x": 300,
+      "y": 280,
+      "w": 180,
+      "h": 180
+    },
+    {
+      "id": "slot_2",
+      "name": "Slot 2",
+      "x": 500,
+      "y": 280,
+      "w": 180,
+      "h": 180
+    }
+  ],
+  "target_colors": [
+    "purple",
+    "red"
+  ],
+  "action_rules": {
+    "red": "stop",
+    "purple": "stop",
+    "gold": "stop",
+    "blue": "stop",
+    "green": "stop"
+  },
+  "color_definitions": {
+    "purple": {
+      "name": "Tim (Purple / Epic)",
+      "h_min": 125,
+      "h_max": 160,
+      "s_min": 60,
+      "s_max": 255,
+      "v_min": 60,
+      "v_max": 255
+    },
+    "red": {
+      "name": "Do (Red / Mythic)",
+      "h_min": 0,
+      "h_max": 10,
+      "s_min": 100,
+      "s_max": 255,
+      "v_min": 80,
+      "v_max": 255,
+      "h2_min": 170,
+      "h2_max": 180
+    },
+    "gold": {
+      "name": "Vang (Gold / Legendary)",
+      "h_min": 20,
+      "h_max": 35,
+      "s_min": 100,
+      "s_max": 255,
+      "v_min": 100,
+      "v_max": 255
+    },
+    "blue": {
+      "name": "Xanh duong (Blue / Rare)",
+      "h_min": 95,
+      "h_max": 125,
+      "s_min": 80,
+      "s_max": 255,
+      "v_min": 70,
+      "v_max": 255
+    },
+    "green": {
+      "name": "Xanh la (Green / Uncommon)",
+      "h_min": 35,
+      "h_max": 85,
+      "s_min": 60,
+      "s_max": 255,
+      "v_min": 60,
+      "v_max": 255
+    }
+  },
+  "match_threshold_percent": 1.0,
+  "delay_between_rolls": 1.5,
+  "delay_random_offset_ms": 100,
+  "max_rolls": 100,
+  "play_sound": true,
+  "save_screenshot": true,
+  "use_animation_detection": false,
+  "anim_stable_threshold": 1.5,
+  "anim_stable_frames": 2,
+  "anim_max_wait": 6.0,
+  "budget_guard": {
+    "enabled": false,
+    "x": 920,
+    "y": 585,
+    "w": 100,
+    "h": 35,
+    "brightness_drop": 30.0
+  },
+  "hotkeys": {
+    "start_pause": "f6",
+    "stop": "f7"
+  },
+  "profiles": {
+    "default": {
+      "name": "Mac dinh",
+      "roll_button": {"x": 1000, "y": 600},
+      "target_colors": ["purple", "red"]
+    }
+  }
+}
