@@ -502,10 +502,26 @@ class RegionRowWidget(QWidget):
         self.lbl_thumbnail.setPixmap(pix)
         self.lbl_coord_info.setStyleSheet("color: #94A3B8; font-size: 10px;")
 
+    def set_captured_image(self, img_bgr):
+        """Cập nhật trực tiếp ảnh đã chụp từ region picker mà không cần chụp lại."""
+        if img_bgr is None or img_bgr.size == 0:
+            return
+        self._last_img_bgr = img_bgr.copy()
+        try:
+            import cv2
+            ok, buf = cv2.imencode(".png", self._last_img_bgr)
+            if ok:
+                pix = QPixmap()
+                pix.loadFromData(buf.tobytes())
+                self.lbl_thumbnail.setPixmap(
+                    pix.scaled(140, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+                self.lbl_coord_info.setStyleSheet("color: #10B981; font-size: 11px; font-weight: bold;")
+        except Exception as e:
+            print(f"[RegionRow] Lỗi set_captured_image: {e}")
+
     def _on_thumbnail_clicked(self, event):
         """Click thumbnail to view full resolution image in popup dialog."""
-        # Dùng ảnh đã cache từ lần preview trước (KHÔNG chụp lại lúc này vì
-        # cửa sổ AutoClick đang mở sẽ che mất vùng cần xem)
         img_bgr = self._last_img_bgr
         if img_bgr is None or img_bgr.size == 0:
             self.update_preview()
@@ -528,15 +544,15 @@ class RegionRowWidget(QWidget):
             lbl.setAlignment(Qt.AlignCenter)
 
             import cv2
-            import numpy as np
-            # Đảm bảo array liên tục và sở hữu buffer độc lập
-            rgb = np.ascontiguousarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
-            ih, iw, ch = rgb.shape
-            # Dùng bytes() để Python sở hữu buffer - tránh QImage trỏ vào bộ nhớ bị thu hồi -> ảnh trắng
-            raw_bytes = bytes(rgb.tobytes())
-            qimg = QImage(raw_bytes, iw, ih, ch * iw, QImage.Format_RGB888)
-            pix = QPixmap.fromImage(qimg)
+            # Mã hóa PNG để Qt load trực tiếp vào bộ nhớ pixmap riêng,
+            # tránh tuyệt đối mọi lỗi GC buffer hoặc sai stride/DPI dẫn đến ảnh trắng
+            ok, buf = cv2.imencode(".png", img_bgr)
+            if not ok:
+                return
+            pix = QPixmap()
+            pix.loadFromData(buf.tobytes())
 
+            ih, iw = img_bgr.shape[:2]
             # Nếu ảnh nhỏ hơn 300px, phóng to 2x cho dễ nhìn
             if iw < 300 and ih < 300:
                 pix = pix.scaled(iw * 2, ih * 2, Qt.KeepAspectRatio, Qt.FastTransformation)
@@ -1377,7 +1393,7 @@ class MainWindow(QMainWindow):
             self.hide()
             QApplication.processEvents()
             time.sleep(0.15)
-            result = pick_region()
+            result, cropped_bgr = pick_region()
             self.show()
             self.raise_()
             if result and slot_idx < len(self._region_rows):
@@ -1387,7 +1403,10 @@ class MainWindow(QMainWindow):
                 row.spin_y.setValue(y)
                 row.spin_w.setValue(w)
                 row.spin_h.setValue(h)
-                row.update_preview()
+                if cropped_bgr is not None and cropped_bgr.size > 0:
+                    row.set_captured_image(cropped_bgr)
+                else:
+                    row.update_preview()
                 self.save_ui_to_config(show_msg=False)
                 self._sync_slots_to_scenario()
                 self.append_log(f"Đã chọn vùng Slot {slot_idx+1}: ({x}, {y}, {w}×{h})", "SUCCESS")

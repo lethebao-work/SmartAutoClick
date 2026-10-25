@@ -208,10 +208,30 @@ def pick_region(parent_widget=None) -> Optional[Tuple[int, int, int, int]]:
     # (most games run full-screen on primary anyway).
     # The overlay covers the full virtual desktop so the user can pick on any monitor.
 
-    overlay = RegionPickerOverlay(screen_pixmap, virtual_geometry, dpr)
+    # Lưu lại ảnh crop thực tế ngay tại thời điểm chọn vùng
+    cropped_bgr = [None]
 
     def on_selected(x, y, w, h):
         result[0] = (x, y, w, h)
+        try:
+            # Crop trực tiếp từ screen_pixmap để lưu làm preview chuẩn
+            rect = overlay._get_rect()
+            if not rect.isNull() and rect.width() > 0 and rect.height() > 0:
+                px_x = int(rect.x() * dpr)
+                px_y = int(rect.y() * dpr)
+                px_w = int(rect.width() * dpr)
+                px_h = int(rect.height() * dpr)
+                cropped_pix = screen_pixmap.copy(px_x, px_y, px_w, px_h)
+                qimg = cropped_pix.toImage().convertToFormat(QImage.Format_RGBA8888)
+                ih, iw = qimg.height(), qimg.width()
+                bpl = qimg.bytesPerLine()
+                import numpy as np
+                import cv2
+                raw = np.frombuffer(qimg.constBits(), dtype=np.uint8).reshape((ih, bpl))
+                arr_rgba = raw[:, :iw * 4].reshape((ih, iw, 4))
+                cropped_bgr[0] = cv2.cvtColor(arr_rgba, cv2.COLOR_RGBA2BGR)
+        except Exception:
+            pass
 
     def on_cancelled():
         result[0] = None
@@ -224,4 +244,6 @@ def pick_region(parent_widget=None) -> Optional[Tuple[int, int, int, int]]:
     while overlay.isVisible():
         app.processEvents()
 
-    return result[0]
+    if result[0] is not None:
+        return result[0], cropped_bgr[0]
+    return None, None
