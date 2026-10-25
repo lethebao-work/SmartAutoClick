@@ -504,15 +504,33 @@ class RegionRowWidget(QWidget):
 
     def _on_thumbnail_clicked(self, event):
         """Click thumbnail to view full resolution image in popup dialog."""
-        if self._last_img_bgr is None or self._last_img_bgr.size == 0:
+        # Chụp lại ảnh mới nhất ngay tại thời điểm click
+        x = self.spin_x.value()
+        y = self.spin_y.value()
+        w = self.spin_w.value()
+        h = self.spin_h.value()
+
+        img_bgr = self._last_img_bgr  # dùng cache nếu có
+        if img_bgr is None or img_bgr.size == 0 or w <= 5 or h <= 5:
             self.update_preview()
-            if self._last_img_bgr is None or self._last_img_bgr.size == 0:
-                return
+            img_bgr = self._last_img_bgr
+        if img_bgr is None or img_bgr.size == 0:
+            return
 
         try:
+            # Thử chụp lại ảnh tươi để đảm bảo hiển thị đúng
+            try:
+                from core.capture import get_shared_capture
+                fresh = get_shared_capture().capture_region(x, y, w, h)
+                if fresh is not None and fresh.size > 0:
+                    img_bgr = fresh
+                    self._last_img_bgr = img_bgr.copy()
+            except Exception:
+                pass  # fallback dùng cache
+
             dlg = QDialog(self)
             region_name = getattr(self, "_region_name", f"Slot {self.index + 1}")
-            dlg.setWindowTitle(f"🔍 Ảnh Gốc Chi Tiết — {region_name} ({self.spin_w.value()}×{self.spin_h.value()})")
+            dlg.setWindowTitle(f"🔍 Ảnh Gốc Chi Tiết — {region_name} ({w}×{h})")
             dlg.setStyleSheet("background-color: #0B0F17; color: #E2E8F0;")
             v = QVBoxLayout(dlg)
             v.setContentsMargins(12, 12, 12, 12)
@@ -521,15 +539,18 @@ class RegionRowWidget(QWidget):
             lbl.setAlignment(Qt.AlignCenter)
 
             import cv2
-            rgb = cv2.cvtColor(self._last_img_bgr, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb.shape
-            # Tạo QImage độc lập với .copy() để ngăn ngừa crash khi buffer bị dọn dẹp
-            qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888).copy()
+            import numpy as np
+            # Đảm bảo array liên tục và sở hữu buffer độc lập
+            rgb = np.ascontiguousarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+            ih, iw, ch = rgb.shape
+            # Dùng bytes() để Python sở hữu buffer - tránh QImage trỏ vào bộ nhớ bị thu hồi
+            raw_bytes = bytes(rgb.tobytes())
+            qimg = QImage(raw_bytes, iw, ih, ch * iw, QImage.Format_RGB888)
             pix = QPixmap.fromImage(qimg)
 
             # Nếu ảnh nhỏ hơn 300px, phóng to 2x cho dễ nhìn
-            if w < 300 and h < 300:
-                pix = pix.scaled(w * 2, h * 2, Qt.KeepAspectRatio, Qt.NearestNeighbor)
+            if iw < 300 and ih < 300:
+                pix = pix.scaled(iw * 2, ih * 2, Qt.KeepAspectRatio, Qt.FastTransformation)
 
             lbl.setPixmap(pix)
             v.addWidget(lbl)
