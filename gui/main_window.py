@@ -444,6 +444,28 @@ class RegionRowWidget(QWidget):
         if w <= 5 or h <= 5:
             return
 
+        # Ưu tiên dùng ScreenCapture (mss / PIL fallback) để lấy mảng numpy BGR chuẩn xác
+        try:
+            from core.capture import ScreenCapture
+            cap = ScreenCapture()
+            img_bgr = cap.capture_region(x, y, w, h)
+            if img_bgr is not None and img_bgr.size > 0:
+                self._last_img_bgr = img_bgr.copy()
+                ih, iw = img_bgr.shape[:2]
+                import cv2
+                img_rgb = cv2.cvtColor(self._last_img_bgr, cv2.COLOR_BGR2RGB)
+                # Dùng format QImage.Format_RGB888 với bytesPerLine chuẩn và copy() để sở hữu bộ nhớ riêng
+                qimg = QImage(img_rgb.data, iw, ih, iw * 3, QImage.Format_RGB888).copy()
+                pix = QPixmap.fromImage(qimg)
+                self.lbl_thumbnail.setPixmap(
+                    pix.scaled(140, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+                self.lbl_coord_info.setStyleSheet("color: #10B981; font-size: 11px; font-weight: bold;")
+                return
+        except Exception:
+            pass
+
+        # Fallback dùng Qt primaryScreen nếu ScreenCapture không khả dụng
         try:
             app = QApplication.instance()
             screen = app.primaryScreen() if app else None
@@ -454,40 +476,22 @@ class RegionRowWidget(QWidget):
                         pix.scaled(140, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     )
                     self.lbl_coord_info.setStyleSheet("color: #10B981; font-size: 11px; font-weight: bold;")
-                    # Convert to BGR for full view and color sampling
                     try:
                         import cv2
-                        qimg = pix.toImage().convertToFormat(QImage.Format_RGB888)
+                        qimg = pix.toImage().convertToFormat(QImage.Format_RGBA8888)
+                        ih, iw = qimg.height(), qimg.width()
+                        bpl = qimg.bytesPerLine()
                         ptr = qimg.constBits()
-                        arr = np.array(ptr).reshape(qimg.height(), qimg.width(), 3)
-                        self._last_img_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+                        raw_buf = np.frombuffer(ptr, dtype=np.uint8).reshape((ih, bpl))
+                        arr_rgba = raw_buf[:, :iw * 4].reshape((ih, iw, 4))
+                        self._last_img_bgr = cv2.cvtColor(arr_rgba, cv2.COLOR_RGBA2BGR)
                     except Exception:
                         pass
                     return
         except Exception:
             pass
 
-        try:
-            from core.capture import ScreenCapture
-            cap = ScreenCapture()
-            img_bgr = cap.capture_region(x, y, w, h)
-            if img_bgr is not None and img_bgr.size > 0:
-                self._last_img_bgr = img_bgr
-                import cv2
-                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                ih, iw, ich = img_rgb.shape
-                bytes_per_line = ich * iw
-                qimg = QImage(img_rgb.data, iw, ih, bytes_per_line, QImage.Format_RGB888)
-                pix = QPixmap.fromImage(qimg)
-                self.lbl_thumbnail.setPixmap(
-                    pix.scaled(140, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                )
-                self.lbl_coord_info.setStyleSheet("color: #10B981; font-size: 11px; font-weight: bold;")
-                return
-        except Exception:
-            pass
-
-        # Fallback placeholder pixmap
+        # Fallback placeholder pixmap nếu cả hai cách chụp đều chưa có hình
         pix = QPixmap(140, 90)
         pix.fill(QColor(15, 23, 42))
         p = QPainter(pix)
@@ -502,31 +506,53 @@ class RegionRowWidget(QWidget):
         """Click thumbnail to view full resolution image in popup dialog."""
         if self._last_img_bgr is None or self._last_img_bgr.size == 0:
             self.update_preview()
-            return
+            if self._last_img_bgr is None or self._last_img_bgr.size == 0:
+                return
+
         try:
             dlg = QDialog(self)
-            dlg.setWindowTitle(f"🔍 Ảnh Gốc Chi Tiết — {self._region_name} ({self.spin_w.value()}×{self.spin_h.value()})")
+            region_name = getattr(self, "_region_name", f"Slot {self.index + 1}")
+            dlg.setWindowTitle(f"🔍 Ảnh Gốc Chi Tiết — {region_name} ({self.spin_w.value()}×{self.spin_h.value()})")
             dlg.setStyleSheet("background-color: #0B0F17; color: #E2E8F0;")
             v = QVBoxLayout(dlg)
             v.setContentsMargins(12, 12, 12, 12)
+
             lbl = QLabel()
             lbl.setAlignment(Qt.AlignCenter)
+
             import cv2
             rgb = cv2.cvtColor(self._last_img_bgr, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb.shape
-            qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+            # Tạo QImage độc lập với .copy() để ngăn ngừa crash khi buffer bị dọn dẹp
+            qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888).copy()
             pix = QPixmap.fromImage(qimg)
-            # Nếu ảnh nhỏ, phóng to 2x cho dễ nhìn
+
+            # Nếu ảnh nhỏ hơn 300px, phóng to 2x cho dễ nhìn
             if w < 300 and h < 300:
                 pix = pix.scaled(w * 2, h * 2, Qt.KeepAspectRatio, Qt.NearestNeighbor)
+
             lbl.setPixmap(pix)
             v.addWidget(lbl)
+
             btn = QPushButton("Đóng")
+            btn.setFixedHeight(32)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #1E293B;
+                    border: 1px solid #475569;
+                    font-weight: bold;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #334155;
+                }
+            """)
             btn.clicked.connect(dlg.accept)
             v.addWidget(btn)
+
             dlg.exec()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Thumbnail] Lỗi khi mở ảnh xem trước chi tiết: {e}")
 
     def get_data(self) -> Dict[str, Any]:
         return {
