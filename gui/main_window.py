@@ -504,29 +504,18 @@ class RegionRowWidget(QWidget):
 
     def _on_thumbnail_clicked(self, event):
         """Click thumbnail to view full resolution image in popup dialog."""
-        # Chụp lại ảnh mới nhất ngay tại thời điểm click
-        x = self.spin_x.value()
-        y = self.spin_y.value()
-        w = self.spin_w.value()
-        h = self.spin_h.value()
-
-        img_bgr = self._last_img_bgr  # dùng cache nếu có
-        if img_bgr is None or img_bgr.size == 0 or w <= 5 or h <= 5:
+        # Dùng ảnh đã cache từ lần preview trước (KHÔNG chụp lại lúc này vì
+        # cửa sổ AutoClick đang mở sẽ che mất vùng cần xem)
+        img_bgr = self._last_img_bgr
+        if img_bgr is None or img_bgr.size == 0:
             self.update_preview()
             img_bgr = self._last_img_bgr
         if img_bgr is None or img_bgr.size == 0:
             return
 
         try:
-            # Thử chụp lại ảnh tươi để đảm bảo hiển thị đúng
-            try:
-                from core.capture import get_shared_capture
-                fresh = get_shared_capture().capture_region(x, y, w, h)
-                if fresh is not None and fresh.size > 0:
-                    img_bgr = fresh
-                    self._last_img_bgr = img_bgr.copy()
-            except Exception:
-                pass  # fallback dùng cache
+            w = self.spin_w.value()
+            h = self.spin_h.value()
 
             dlg = QDialog(self)
             region_name = getattr(self, "_region_name", f"Slot {self.index + 1}")
@@ -543,7 +532,7 @@ class RegionRowWidget(QWidget):
             # Đảm bảo array liên tục và sở hữu buffer độc lập
             rgb = np.ascontiguousarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
             ih, iw, ch = rgb.shape
-            # Dùng bytes() để Python sở hữu buffer - tránh QImage trỏ vào bộ nhớ bị thu hồi
+            # Dùng bytes() để Python sở hữu buffer - tránh QImage trỏ vào bộ nhớ bị thu hồi -> ảnh trắng
             raw_bytes = bytes(rgb.tobytes())
             qimg = QImage(raw_bytes, iw, ih, ch * iw, QImage.Format_RGB888)
             pix = QPixmap.fromImage(qimg)
