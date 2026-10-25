@@ -93,7 +93,7 @@ def validate_color_definition(rule: Dict[str, Any]) -> Dict[str, Any]:
     return validated
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "version": "2.0",
+    "version": "2.4",
     "roll_button": {
         "x": 1000,
         "y": 600

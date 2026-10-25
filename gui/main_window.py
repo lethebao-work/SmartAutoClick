@@ -28,6 +28,7 @@ from core.macro_recorder import MacroRecorder, MacroPlayer, save_macro, load_mac
 from gui.compact_window import CompactWindow
 from gui.test_inspector import TestInspectorDialog
 from gui.scenario_builder import ScenarioBuilderWidget
+from version import APP_VERSION, APP_NAME
 
 
 
@@ -618,7 +619,7 @@ class MainWindow(QMainWindow):
     # ──────────────────────────────────────────────────────────────────────────
 
     def init_ui(self):
-        self.setWindowTitle("Smart Auto Click v2.0 — Conditional Auto Clicker")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} — Conditional Auto Clicker")
         self.resize(1020, 850)
         self.setMinimumSize(940, 740)
         self.setStyleSheet(DARK_STYLESHEET)
@@ -640,7 +641,7 @@ class MainWindow(QMainWindow):
         lbl_title.setStyleSheet("color: #C0C1FF; letter-spacing: 0.5px;")
         title_box.addWidget(lbl_title)
 
-        lbl_ver = QLabel("v2.0")
+        lbl_ver = QLabel(f"v{APP_VERSION}")
         lbl_ver.setStyleSheet("background-color: #312E81; color: #C0C1FF; font-size: 10px; font-weight: bold; padding: 2px 7px; border-radius: 4px;")
         title_box.addWidget(lbl_ver)
         header.addLayout(title_box)
@@ -1710,7 +1711,7 @@ class MainWindow(QMainWindow):
         elif os.path.exists(self.icon_ico_path):
             self.tray_icon.setIcon(QIcon(self.icon_ico_path))
 
-        self.tray_icon.setToolTip("Smart Auto Click v2.0")
+        self.tray_icon.setToolTip(f"{APP_NAME} v{APP_VERSION}")
 
         # Tray context menu
         tray_menu = QMenu()

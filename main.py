@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from core.config_manager import ConfigManager, get_base_dir
 from gui.main_window import MainWindow
+from version import APP_VERSION, APP_NAME, APP_BUILD_DATE
 
 try:
     import keyboard
@@ -66,6 +67,9 @@ def get_resource_path(relative_path: str) -> str:
 
 def main():
     # (DPI awareness đã được đặt ở đầu file, trước mọi import)
+    print(f"{'='*50}")
+    print(f"  {APP_NAME} v{APP_VERSION}  (build {APP_BUILD_DATE})")
+    print(f"{'='*50}")
 
     app = QApplication(sys.argv)
     app.setApplicationName("Smart Auto Click")

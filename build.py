@@ -13,12 +13,15 @@ if hasattr(sys.stdout, "reconfigure"):
 import os
 import shutil
 import subprocess
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from version import APP_VERSION, APP_NAME
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def build():
     print("=" * 60)
-    print("Bat dau dong goi Smart Auto Click v2.0 thanh file .exe...")
+    print(f"Bat dau dong goi {APP_NAME} v{APP_VERSION} thanh file .exe...")
     print("=" * 60)
 
     # 1. Dam bao assets da duoc tao
@@ -51,6 +54,7 @@ def build():
         "--hidden-import=numpy",
         "--hidden-import=mss",
         "--hidden-import=PIL",
+        "--hidden-import=dxcam",
         "main.py"
     ]
 
@@ -61,8 +65,8 @@ def build():
         print("\n" + "=" * 60)
         print("DONG GOI THANH CONG!")
         exe_path = os.path.join(BASE_DIR, "dist", "SmartAutoClick.exe")
-        print(f"Duong dan file EXE duy nhat: {exe_path}")
-        print("Ung dung da duoc bundle toan bo assets va dependencies vao duy nhat 1 file .exe doc lap!")
+        print(f"Duong dan file EXE: {exe_path}")
+        print(f"[{APP_NAME} v{APP_VERSION}] da duoc bundle toan bo assets va dependencies vao 1 file .exe!")
         print("Ban co the click dup vao SmartAutoClick.exe hoac ghim vao Taskbar!")
         print("=" * 60)
     else:
