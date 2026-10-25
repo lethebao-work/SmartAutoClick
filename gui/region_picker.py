@@ -7,13 +7,41 @@ screenGeometry() thay vì primaryScreen().geometry() để hỗ trợ multi-moni
 và tính device-pixel-ratio để ảnh chụp không bị lệch.
 """
 from typing import Optional, Tuple
+import ctypes
+import logging
+import cv2
+import numpy as np
 
 from PySide6.QtCore import Qt, QRect, QPoint, Signal, QRectF
 from PySide6.QtGui import (
     QColor, QPainter, QPen, QBrush, QScreen,
-    QPixmap, QFont, QCursor, QKeyEvent
+    QPixmap, QImage, QFont, QCursor, QKeyEvent
 )
 from PySide6.QtWidgets import QApplication, QWidget
+
+logger = logging.getLogger("SmartAutoClick.RegionPicker")
+
+# Windows Display Affinity Constants (Windows 10 version 2004 / build 19041+)
+WDA_NONE = 0x00000000
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+
+def set_window_capture_affinity(hwnd: int, exclude: bool = True) -> bool:
+    """
+    Đặt hoặc gỡ cờ WDA_EXCLUDEFROMCAPTURE cho cửa sổ Windows (Win10 build 19041+).
+    Khi bật (exclude=True), cửa sổ này sẽ hoàn toàn vô hình đối với bất kỳ ảnh chụp màn hình nào (DWM/Qt grabWindow).
+    """
+    if not hwnd or not hasattr(ctypes, "windll"):
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        if hasattr(user32, "SetWindowDisplayAffinity"):
+            val = WDA_EXCLUDEFROMCAPTURE if exclude else WDA_NONE
+            res = user32.SetWindowDisplayAffinity(hwnd, val)
+            return bool(res)
+    except Exception as e:
+        logger.debug("Khong the dat SetWindowDisplayAffinity: %s", e)
+    return False
 
 
 class RegionPickerOverlay(QWidget):
@@ -104,10 +132,10 @@ class RegionPickerOverlay(QWidget):
             # Reveal the selected area through the overlay
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             # Map rect back to pixmap source coordinates
-            px_x = int(rect.x() * self._dpr)
-            px_y = int(rect.y() * self._dpr)
-            px_w = int(rect.width() * self._dpr)
-            px_h = int(rect.height() * self._dpr)
+            px_x = int(round(rect.x() * self._dpr))
+            px_y = int(round(rect.y() * self._dpr))
+            px_w = int(round(rect.width() * self._dpr))
+            px_h = int(round(rect.height() * self._dpr))
             src_rect = QRect(px_x, px_y, px_w, px_h)
             painter.drawPixmap(rect, self._screen_pixmap, src_rect)
 
@@ -185,82 +213,123 @@ class RegionPickerOverlay(QWidget):
         painter.end()
 
 
-def pick_region(parent_widget=None) -> Optional[Tuple[int, int, int, int]]:
+def pick_region(parent_widget=None) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[np.ndarray]]:
     """
     Bắt đầu overlay chọn vùng. Chặn đến khi người dùng chọn xong hoặc hủy.
-    Trả về (x, y, w, h) tọa độ logic toàn màn hình hoặc None nếu hủy.
+    Tự động áp dụng WDA_EXCLUDEFROMCAPTURE cho parent_widget (nếu có) để không cần ẩn tool.
+    Hỗ trợ ghép ảnh toàn bộ các màn hình (multi-monitor stitching) và kiểm tra ảnh trắng/đen đồng màu.
+    Trả về:
+        ((phys_x, phys_y, phys_w, phys_h), cropped_bgr) hoặc (None, None) nếu hủy hoặc ảnh lỗi.
     """
-    result = [None]
     app = QApplication.instance()
+    if not app:
+        logger.error("pick_region: QApplication chua duoc khoi tao!")
+        return None, None
 
-    # Build virtual desktop rect spanning all screens
-    virtual_geometry = QRect()
-    for screen in app.screens():
-        virtual_geometry = virtual_geometry.united(screen.geometry())
-
-    # Grab the entire virtual desktop.
-    # We use primaryScreen().grabWindow(0) as a simpler cross-platform approach,
-    # or fallback to grabbing each screen and compositing.
-    primary = app.primaryScreen()
-    dpr = primary.devicePixelRatio()
-
-    # Grab the primary screen window (WinId=0 means entire screen root on Windows)
-    screen_pixmap = primary.grabWindow(0)
-
-    # If there are multiple screens, try to stitch them.
-    # For simplicity we just use primary screen capture mapped to virtual geometry
-    # (most games run full-screen on primary anyway).
-    # The overlay covers the full virtual desktop so the user can pick on any monitor.
-
-    overlay = RegionPickerOverlay(screen_pixmap, virtual_geometry, dpr)
-
-    # Lưu lại ảnh crop thực tế ngay tại thời điểm chọn vùng
-    cropped_bgr = [None]
-    rel_coords = [None]  # (rx, ry, rw, rh) theo tỉ lệ
-
-    def on_selected(x, y, w, h):
-        result[0] = (x, y, w, h)
+    # Tự động ẩn cửa sổ tool khỏi tầm chụp bằng SetWindowDisplayAffinity (Windows 10 2004+)
+    parent_hwnd = 0
+    affinity_applied = False
+    if parent_widget is not None and hasattr(parent_widget, "winId"):
         try:
-            from core.coordinates import RelativeRect
-            # Tính tỉ lệ tương đối theo virtual desktop
-            vw = max(1, int(virtual_geometry.width() * dpr))
-            vh = max(1, int(virtual_geometry.height() * dpr))
-            rr = RelativeRect.from_client_rect(x, y, w, h, vw, vh)
-            rel_coords[0] = (rr.rx, rr.ry, rr.rw, rr.rh)
-        except Exception:
-            pass
+            parent_hwnd = int(parent_widget.winId())
+            affinity_applied = set_window_capture_affinity(parent_hwnd, True)
+            if affinity_applied:
+                app.processEvents()
+        except Exception as e:
+            logger.debug("Loi khi apply window capture affinity: %s", e)
 
-        try:
-            # Crop trực tiếp từ screen_pixmap để lưu làm preview chuẩn
-            rect = overlay._get_rect()
-            if not rect.isNull() and rect.width() > 0 and rect.height() > 0:
-                px_x = int(rect.x() * dpr)
-                px_y = int(rect.y() * dpr)
-                px_w = int(rect.width() * dpr)
-                px_h = int(rect.height() * dpr)
-                cropped_pix = screen_pixmap.copy(px_x, px_y, px_w, px_h)
-                qimg = cropped_pix.toImage().convertToFormat(QImage.Format_RGBA8888)
-                ih, iw = qimg.height(), qimg.width()
-                bpl = qimg.bytesPerLine()
-                import numpy as np
-                import cv2
-                raw = np.frombuffer(qimg.constBits(), dtype=np.uint8).reshape((ih, bpl))
-                arr_rgba = raw[:, :iw * 4].reshape((ih, iw, 4))
-                cropped_bgr[0] = cv2.cvtColor(arr_rgba, cv2.COLOR_RGBA2BGR)
-        except Exception:
-            pass
+    try:
+        # Build virtual desktop rect spanning all screens
+        screens = app.screens()
+        virtual_geometry = QRect()
+        for screen in screens:
+            virtual_geometry = virtual_geometry.united(screen.geometry())
 
-    def on_cancelled():
-        result[0] = None
+        primary = app.primaryScreen()
+        dpr = primary.devicePixelRatio() if primary else 1.0
 
-    overlay.region_selected.connect(on_selected)
-    overlay.cancelled.connect(on_cancelled)
+        # Ghép ảnh chụp của tất cả các màn hình (multi-monitor compositing)
+        canvas_w = int(round(virtual_geometry.width() * dpr))
+        canvas_h = int(round(virtual_geometry.height() * dpr))
+        stitched_pixmap = QPixmap(canvas_w, canvas_h)
+        stitched_pixmap.fill(Qt.black)
 
-    overlay.showFullScreen()
+        painter = QPainter(stitched_pixmap)
+        for s in screens:
+            try:
+                s_pix = s.grabWindow(0)
+                s_geo = s.geometry()
+                px = int(round((s_geo.x() - virtual_geometry.x()) * dpr))
+                py = int(round((s_geo.y() - virtual_geometry.y()) * dpr))
+                painter.drawPixmap(px, py, s_pix)
+            except Exception as e:
+                logger.error("Loi khi grabWindow tren screen %s: %s", s.name(), e)
+        painter.end()
 
-    while overlay.isVisible():
-        app.processEvents()
+        # Kiểm tra tính hợp lệ của ảnh nền (chống ảnh trắng/đen đồng màu std ≈ 0)
+        qimg_test = stitched_pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
+        if qimg_test.isNull() or qimg_test.width() <= 0 or qimg_test.height() <= 0:
+            logger.error("pick_region: Khong the lay anh chup man hinh hop le.")
+            return None, None
 
-    if result[0] is not None:
+        th, tw = qimg_test.height(), qimg_test.width()
+        tbpl = qimg_test.bytesPerLine()
+        raw_test = np.frombuffer(qimg_test.constBits(), dtype=np.uint8).reshape((th, tbpl))
+        bg_rgb_test = raw_test[::8, :tw * 4:8]  # subsample nhanh để đo độ lệch chuẩn
+        std_val = float(np.std(bg_rgb_test))
+        mean_val = float(np.mean(bg_rgb_test))
+
+        if std_val < 0.8 and (mean_val > 250.0 or mean_val < 2.0):
+            logger.error(
+                "pick_region: Phat hien anh man hinh bi trang/den dong mau (mean=%.1f, std=%.2f). Huy overlay.",
+                mean_val, std_val
+            )
+            return None, None
+
+        overlay = RegionPickerOverlay(stitched_pixmap, virtual_geometry, dpr)
+
+        result = [None]
+        cropped_bgr = [None]
+
+        def on_selected(x, y, w, h):
+            result[0] = (x, y, w, h)
+            try:
+                # Crop trực tiếp từ stitched_pixmap để lưu làm preview chuẩn
+                rect = overlay._get_rect()
+                if not rect.isNull() and rect.width() > 0 and rect.height() > 0:
+                    px_x = int(round(rect.x() * dpr))
+                    px_y = int(round(rect.y() * dpr))
+                    px_w = int(round(rect.width() * dpr))
+                    px_h = int(round(rect.height() * dpr))
+                    cropped_pix = stitched_pixmap.copy(px_x, px_y, px_w, px_h)
+                    qimg = cropped_pix.toImage().convertToFormat(QImage.Format_RGBA8888)
+                    ih, iw = qimg.height(), qimg.width()
+                    bpl = qimg.bytesPerLine()
+                    raw = np.frombuffer(qimg.constBits(), dtype=np.uint8).reshape((ih, bpl))
+                    arr_rgba = raw[:, :iw * 4].reshape((ih, iw, 4))
+                    cropped_bgr[0] = cv2.cvtColor(arr_rgba, cv2.COLOR_RGBA2BGR)
+            except Exception as e:
+                logger.error("Loi khi crop anh xem truoc trong RegionPicker: %s", e)
+
+        def on_cancelled():
+            result[0] = None
+
+        overlay.region_selected.connect(on_selected)
+        overlay.cancelled.connect(on_cancelled)
+
+        overlay.showFullScreen()
+
+        while overlay.isVisible():
+            app.processEvents()
+
         return result[0], cropped_bgr[0]
-    return None, None
+
+    finally:
+        # Luôn phục hồi capture affinity cho cửa sổ mẹ nếu đã áp dụng
+        if affinity_applied and parent_hwnd:
+            try:
+                set_window_capture_affinity(parent_hwnd, False)
+                app.processEvents()
+            except Exception:
+                pass
+

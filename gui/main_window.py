@@ -1392,13 +1392,13 @@ class MainWindow(QMainWindow):
             slot_idx = target
 
         try:
-            from gui.region_picker import pick_region
-            self.hide()
-            QApplication.processEvents()
-            time.sleep(0.15)
-            result, cropped_bgr = pick_region()
-            self.show()
+            from gui.region_picker import pick_region, set_window_capture_affinity
+            # Truyền self vào pick_region: tự động kích hoạt WDA_EXCLUDEFROMCAPTURE
+            # Tool không cần hide() hay sleep(0.15), tránh hoàn toàn lỗi màn hình trắng
+            result, cropped_bgr = pick_region(parent_widget=self)
             self.raise_()
+            self.activateWindow()
+
             if result and slot_idx < len(self._region_rows):
                 x, y, w, h = result
                 row = self._region_rows[slot_idx]
@@ -1414,7 +1414,6 @@ class MainWindow(QMainWindow):
                 self._sync_slots_to_scenario()
                 self.append_log(f"Đã chọn vùng Slot {slot_idx+1}: ({x}, {y}, {w}×{h})", "SUCCESS")
         except Exception as e:
-            self.show()
             self.append_log(f"Lỗi Region Picker: {e}", "ERROR")
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1426,20 +1425,43 @@ class MainWindow(QMainWindow):
             default_slot_idx = None
         try:
             from gui.color_sampler import ColorSamplerDialog
-            cap = get_shared_capture()
-            self.hide()
+            from gui.region_picker import set_window_capture_affinity
+
+            # Ẩn tool khỏi ảnh chụp bằng DisplayAffinity thay vì hide + sleep
+            parent_hwnd = int(self.winId()) if hasattr(self, "winId") else 0
+            affinity_applied = set_window_capture_affinity(parent_hwnd, True) if parent_hwnd else False
             QApplication.processEvents()
-            time.sleep(0.15)
-            img_bgr = cap.capture_fullscreen()
-            self.show()
-            self.raise_()
+
+            img_bgr = None
+            try:
+                # Chụp toàn màn hình qua Qt grabWindow (hoạt động hoàn hảo với DisplayAffinity)
+                app = QApplication.instance()
+                primary = app.primaryScreen() if app else None
+                if primary:
+                    pix = primary.grabWindow(0)
+                    qimg = pix.toImage().convertToFormat(QImage.Format_RGBA8888)
+                    ih, iw = qimg.height(), qimg.width()
+                    bpl = qimg.bytesPerLine()
+                    raw = np.frombuffer(qimg.constBits(), dtype=np.uint8).reshape((ih, bpl))
+                    arr_rgba = raw[:, :iw * 4].reshape((ih, iw, 4))
+                    import cv2
+                    img_bgr = cv2.cvtColor(arr_rgba, cv2.COLOR_RGBA2BGR)
+            except Exception as ce:
+                self.append_log(f"Loi chup man hinh cho Color Sampler qua Qt: {ce}", "WARN")
+
+            if img_bgr is None or img_bgr.size == 0:
+                cap = get_shared_capture()
+                img_bgr = cap.capture_fullscreen()
+
+            if affinity_applied and parent_hwnd:
+                set_window_capture_affinity(parent_hwnd, False)
+                QApplication.processEvents()
 
             slots = [r.get_data() for r in self._region_rows]
             dlg = ColorSamplerDialog(img_bgr, slots=slots, default_slot_idx=default_slot_idx, parent=self)
             dlg.color_sampled.connect(self._on_color_sampled)
             dlg.exec()
         except Exception as e:
-            self.show()
             self.append_log(f"Lỗi Color Sampler: {e}", "ERROR")
 
     def _on_color_sampled(self, key: str, color_def: dict):

@@ -1,11 +1,12 @@
 # Single source of truth cho phiên bản SmartAutoClick.
 # Import từ đây để dùng ở mọi nơi: main.py, GUI, build script.
 
-APP_VERSION = "3.6.0"
+APP_VERSION = "3.6.1"
 APP_NAME = "Smart Auto Click"
-APP_BUILD_DATE = "2026-10-25"
+APP_BUILD_DATE = "2026-10-26"
 
 # Lịch sử phiên bản (Quy ước: <Đại phiên bản>.<Phase/Tính năng lớn>.<Fix nhỏ>)
+# 3.6.1 - Phase 7A Hotfix: Sửa lỗi màn hình trắng RegionPicker & ColorSampler qua WDA_EXCLUDEFROMCAPTURE, thêm QImage import, ghép multi-monitor, chặn ảnh đơn sắc và loại bỏ nuốt lỗi.
 # 3.6.0 - Phase 6: Integration, Testing & Release (Full Test Matrix 12 kịch bản, Shadow Mode Evaluator, đóng gói PyInstaller WGC).
 # 3.5.0 - Phase 5: Performance & Recovery Policy (RecoveryManager, ErrorSeverity, Exponential Backoff, SafetyBudget, PerformanceMonitor).
 # 3.4.0 - Phase 4: Event-driven Decision Engine (FSM, Temporal Confirmation, Action Verification).
