@@ -1,6 +1,17 @@
 import sys
 import os
 
+# ── DPI awareness: PHẢI chạy trước mọi import khác ────────────────────────────────────────────
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+    except Exception:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE (Win 8.1)
+        except Exception:
+            pass
+
 # Ensure UTF-8 output encoding for Windows terminals
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -54,13 +65,7 @@ def get_resource_path(relative_path: str) -> str:
 
 
 def main():
-    # Kích hoạt DPI Awareness V2 trước khi khởi tạo Qt App để tọa độ không bị lệch khi scale 125%/150%
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-        except Exception:
-            pass
+    # (DPI awareness đã được đặt ở đầu file, trước mọi import)
 
     app = QApplication(sys.argv)
     app.setApplicationName("Smart Auto Click")

@@ -1,13 +1,15 @@
 import os
 import time
 import copy
+import random
 import threading
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Callable, Tuple
 
 import numpy as np
 
-from core.capture import ScreenCapture
+from core.capture import ScreenCapture, get_shared_capture
+from core.frame_sync import TwoPhaseSettle, SettleState
 from core.detector import ColorDetector
 from core.clicker import InputSimulator
 from core.config_manager import ConfigManager, get_data_dir
@@ -216,7 +218,7 @@ class AutoClickEngine:
         self._custom_animation_detector = animation_detector is not None
         self.clock = clock
 
-        self.capture = capture or ScreenCapture()
+        self.capture = capture or get_shared_capture(self.config_manager.get("capture_backend", "auto"))
         self.detector = detector or ColorDetector(
             color_definitions=self.config_manager.get("color_definitions", {}),
             default_threshold_percent=self.config_manager.get("match_threshold_percent", 1.0)
@@ -385,12 +387,93 @@ class AutoClickEngine:
     def _sleep_interruptible(self, seconds: float) -> bool:
         if self.clock is not None:
             return self.clock.sleep_interruptible(seconds, self._stop_event)
-        end_time = time.monotonic() + seconds
-        while time.monotonic() < end_time:
+        if seconds <= 0:
+            return not self._stop_event.is_set()
+        # Event.wait trả True nếu bị set (stop) trước khi hết giờ
+        return not self._stop_event.wait(seconds)
+
+    def _now(self) -> float:
+        return self.clock.monotonic() if self.clock is not None else time.monotonic()
+
+    def _grab_slots(self, regions: List[Dict[str, Any]]) -> List[np.ndarray]:
+        """Chụp mọi slot từ cùng một khung hình nếu backend hỗ trợ; ném lỗi nếu thất bại."""
+        rects = [(int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])) for r in regions]
+        fn = getattr(self.capture, "capture_regions", None)
+        if callable(fn):
+            return fn(rects)
+        return [self.capture.capture_region(*rc) for rc in rects]
+
+    def _wait_settled(self, regions: List[Dict[str, Any]], baseline: List[np.ndarray],
+                      t_click: float, cfg: Dict[str, float]) -> str:
+        """
+        Chờ THEO KHUNG HÌNH sau click (xem core/frame_sync.py).
+        Trả: SettleState.SETTLED | NO_RESPONSE | TIMEOUT | "stopped" | "capture_failed".
+        """
+        sm = TwoPhaseSettle(
+            baseline, t_click,
+            pixel_delta=int(cfg["pixel_delta"]),
+            change_start_pct=cfg["change_start_pct"],
+            stable_pct=cfg["stable_pct"],
+            stable_s=cfg["stable_s"],
+            first_change_timeout_s=cfg["first_change_timeout_s"],
+            max_wait_s=cfg["max_wait_s"],
+            require_all=bool(cfg.get("require_all", True)),
+        )
+        poll = cfg["poll_s"]
+        errors = 0
+        while True:
             if self._stop_event.is_set():
-                return False
-            time.sleep(min(0.01, seconds))
-        return True
+                return "stopped"
+            try:
+                frames = self._grab_slots(regions)
+                errors = 0
+                result = sm.feed(frames, self._now())
+            except Exception as e:
+                errors += 1
+                self.log(f"Loi chup khi cho settle ({errors}/3): {e}", "WARN")
+                if errors >= 3:
+                    return "capture_failed"
+                result = SettleState.TIMEOUT if self._now() - t_click >= cfg["max_wait_s"] else None
+            if result is not None:
+                total = self._now() - t_click
+                if sm.t_first_change is not None:
+                    self.log(f"Settle={result}: game phan hoi sau {sm.t_first_change - t_click:.3f}s, on dinh sau {total:.3f}s", "DEBUG")
+                else:
+                    self.log(f"Settle={result}: khong thay thay doi sau {total:.3f}s", "DEBUG")
+                return result
+            if not self._sleep_interruptible(poll):
+                return "stopped"
+
+    @staticmethod
+    def _verdict(analysis: Dict[str, Any]) -> Optional[str]:
+        if analysis.get("detected"):
+            return analysis.get("matched_color")
+        if analysis.get("decision") == "UNCERTAIN":
+            return "?"
+        return None
+
+    def _confirm_detection(self, scan_regions, idx, first, target_colors, border_only,
+                           confirm_frames, gap_s) -> Tuple[Dict[str, Any], bool]:
+        """
+        Xác nhận kết quả của một slot qua nhiều khung liên tiếp.
+        Trả (analysis_tốt_nhất, nhất_quán). Không nhất quán = màn hình còn nhấp nháy/đổi.
+        """
+        first_v = self._verdict(first)
+        best, consistent = first, True
+        for _ in range(max(0, confirm_frames - 1)):
+            if not self._sleep_interruptible(gap_s):
+                return best, consistent
+            try:
+                img = self._grab_slots(scan_regions)[idx]
+            except Exception as e:
+                self.log(f"Khong xac nhan duoc (loi chup): {e}", "WARN")
+                return best, False
+            a = self.detector.analyze_image(img, target_colors=target_colors, border_only=border_only)
+            if self._verdict(a) != first_v:
+                consistent = False
+                if a.get("detected") and not best.get("detected"):
+                    best = a
+        return best, consistent
 
     def _wait_for_animation_end(
         self, region: Dict[str, Any], max_wait: float = 8.0, poll_interval: float = 0.05
@@ -445,9 +528,12 @@ class AutoClickEngine:
             self.log(f"Khong the luu anh: {e}", "WARN")
             return None
 
-    def _fire_target_found(self, color_name: str, percent: float, save: bool, play_sound: bool):
+    def _fire_target_found(self, color_name: str, percent: float, save: bool, play_sound: bool, uncertain: bool = False):
         path = None
-        self.log(f"TIM THAY DO HIEM: {color_name} ({percent}% dien tich)!", "SUCCESS")
+        if uncertain:
+            self.log(f"KHONG CHAC CHAN: {color_name} ({percent}% dien tich) - dung de ban kiem tra bang mat!", "WARN")
+        else:
+            self.log(f"TIM THAY DO HIEM: {color_name} ({percent}% dien tich)!", "SUCCESS")
         if save:
             path = self._save_match_screenshot(color_name)
         if play_sound:
@@ -474,6 +560,21 @@ class AutoClickEngine:
         border_only = bool(active_cfg.get("border_only", False))
         target_window = str(active_cfg.get("target_window_title", "")).strip()
         guard_mouse = bool(active_cfg.get("guard_mouse_move", True))
+        confirm_frames = max(1, int(active_cfg.get("confirm_frames", 2)))
+        confirm_gap = float(active_cfg.get("confirm_gap_ms", 30)) / 1000.0
+        uncertain_policy = str(active_cfg.get("uncertain_policy", "stop")).lower()      # stop | ignore
+        on_settle_failure = str(active_cfg.get("on_settle_failure", "stop")).lower()    # stop | scan
+        post_delay = float(active_cfg.get("anim_post_delay", 0.1))
+        settle_cfg = {
+            "pixel_delta": int(active_cfg.get("settle_pixel_delta", 15)),
+            "change_start_pct": float(active_cfg.get("settle_change_start_pct", 0.5)),
+            "stable_pct": float(active_cfg.get("settle_stable_pct", 0.5)),
+            "stable_s": float(active_cfg.get("anim_stable_ms", 250)) / 1000.0,
+            "first_change_timeout_s": float(active_cfg.get("anim_first_change_timeout", 1.5)),
+            "max_wait_s": anim_max_wait,
+            "poll_s": float(active_cfg.get("settle_poll_ms", 10)) / 1000.0,
+            "require_all": bool(active_cfg.get("settle_require_all", True)),
+        }
 
         self.log(
             f"Bat dau vong lap | Roll: ({roll_btn.get('x', 0)},{roll_btn.get('y', 0)}) "
@@ -499,6 +600,7 @@ class AutoClickEngine:
                 finish_reason = "no_region_configured"
                 return
 
+            regions = [dict(r, id=(r.get("id") or f"slot_{i}")) for i, r in enumerate(regions)]
             self._consecutive_capture_errors = 0
 
             while not self._stop_event.is_set():
@@ -522,34 +624,46 @@ class AutoClickEngine:
                         self.pause()
                         continue
 
-                # ── 1. MULTI-SLOT SCAN (Always scan before checking limits or rolling) ──
+                # ── 1. MULTI-SLOT SCAN: MỘT lần chụp chung cho mọi slot chưa khóa ──
                 target_colors = active_cfg.get("target_colors", [])
                 should_stop = False
                 capture_failed_this_cycle = False
+                scan_regions = [r for r in regions if r["id"] not in self._locked_slots]
+                scan_imgs: List[np.ndarray] = []
 
-                for region in regions:
-                    slot_id = region.get("id", "slot_0")
-
-                    # Skip already locked slots
-                    if slot_id in self._locked_slots:
-                        continue
-
-                    rx, ry, rw, rh = int(region["x"]), int(region["y"]), int(region["w"]), int(region["h"])
+                if scan_regions:
                     try:
-                        img_bgr = self.capture.capture_region(rx, ry, rw, rh)
+                        scan_imgs = self._grab_slots(scan_regions)
                         self._consecutive_capture_errors = 0
                     except Exception as e:
                         self._consecutive_capture_errors += 1
-                        self.log(f"Loi chup man hinh slot {slot_id} ({self._consecutive_capture_errors}/3): {e}", "ERROR")
+                        self.log(f"Loi chup man hinh ({self._consecutive_capture_errors}/3): {e}", "ERROR")
                         if self._consecutive_capture_errors >= 3:
                             self.log("Mat thi giac/chup man hinh that bai lien tiep. Dung an toan fail-safe!", "ERROR")
                             finish_reason = "capture_failed"
                             should_stop = True
-                            break
-                        capture_failed_this_cycle = True
-                        continue
+                        else:
+                            capture_failed_this_cycle = True
 
+                for idx, (region, img_bgr) in enumerate(zip(scan_regions, scan_imgs)):
+                    slot_id = region["id"]
                     analysis = self.detector.analyze_image(img_bgr, target_colors=target_colors, border_only=border_only)
+
+                    # Có tín hiệu (khớp hoặc đáng ngờ) -> xác nhận qua nhiều khung trước khi quyết định
+                    if analysis["detected"] or analysis.get("decision") == "UNCERTAIN":
+                        analysis, consistent = self._confirm_detection(
+                            scan_regions, idx, analysis, target_colors, border_only, confirm_frames, confirm_gap
+                        )
+                        still_uncertain = (not consistent) or (
+                            not analysis["detected"] and analysis.get("decision") == "UNCERTAIN"
+                        )
+                        if still_uncertain and uncertain_policy == "stop":
+                            label = (analysis.get("matched_name") if analysis["detected"] else analysis.get("uncertain_name")) or "?"
+                            pct = analysis.get("matched_percent") if analysis["detected"] else analysis.get("uncertain_percent", 0.0)
+                            self._fire_target_found(f"{slot_id}: {label}", pct, save_screenshot, play_sound, uncertain=True)
+                            finish_reason = "uncertain_detection"
+                            should_stop = True
+                            break
 
                     if self.on_roll_attempt:
                         try:
@@ -625,27 +739,40 @@ class AutoClickEngine:
                     self.log("Khong the click vao nut Roll. Dung an toan.", "ERROR")
                     finish_reason = "click_failed"
                     break
+                t_click = self._now()
                 self._last_click_pos = (int(roll_btn["x"]), int(roll_btn["y"]))
 
-                # ── 5. WAIT SETTLED (Animation or delay) ──
+                # ── 5. WAIT SETTLED (theo khung hình, hoặc delay cố định nếu tắt) ──
                 random_offset_ms = float(active_cfg.get("delay_random_offset_ms", 0))
 
-                if use_anim_detect and regions:
-                    settled = self._wait_for_animation_end(regions[0], max_wait=anim_max_wait)
-                    if not settled and self._stop_event.is_set():
+                if use_anim_detect:
+                    outcome = self._wait_settled(scan_regions, scan_imgs, t_click, settle_cfg)
+                    if outcome == "stopped":
                         finish_reason = "user_stopped"
                         break
-                    extra = 0.2
+                    if outcome == "capture_failed":
+                        finish_reason = "capture_failed"
+                        break
+                    if outcome in (SettleState.NO_RESPONSE, SettleState.TIMEOUT):
+                        reason = "no_response" if outcome == SettleState.NO_RESPONSE else "settle_timeout"
+                        if on_settle_failure == "stop":
+                            self.log(
+                                "Game khong phan hoi sau click (nut bi khoa/het tien/click truot?)" if outcome == SettleState.NO_RESPONSE
+                                else "Man hinh khong on dinh trong thoi gian cho. Dung de tranh doc ket qua giua chung.",
+                                "ERROR",
+                            )
+                            finish_reason = reason
+                            break
+                        self.log(f"{reason}: tiep tuc quet theo on_settle_failure=scan (co the doc nham khung).", "WARN")
+                    extra = post_delay
                     if random_offset_ms > 0:
-                        import random
-                        extra = max(0.05, 0.2 + random.uniform(-random_offset_ms / 2, random_offset_ms / 2) / 1000.0)
+                        extra = max(0.0, post_delay + random.uniform(-random_offset_ms / 2, random_offset_ms / 2) / 1000.0)
                     if not self._sleep_interruptible(extra):
                         finish_reason = "user_stopped"
                         break
                 else:
                     actual_delay = delay
                     if random_offset_ms > 0:
-                        import random
                         jitter = random.uniform(-random_offset_ms, random_offset_ms) / 1000.0
                         actual_delay = max(0.05, delay + jitter)
                     if not self._sleep_interruptible(actual_delay):

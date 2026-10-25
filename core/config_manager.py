@@ -125,6 +125,29 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_rolls": 100,
     "play_sound": True,
     "save_screenshot": True,
+
+    # ── Chụp màn hình ──
+    # "auto" = DXGI (nhanh, hợp windowed/borderless) -> mss -> PIL. Có thể ép "dxgi" | "mss" | "pil".
+    "capture_backend": "auto",
+
+    # ── Đồng bộ theo khung hình sau mỗi click (thay cho delay cố định) ──
+    "use_animation_detection": True,
+    "anim_max_wait": 6.0,              # tối đa chờ ổn định (giây)
+    "anim_first_change_timeout": 1.5,  # tối đa chờ game PHẢN HỒI sau click (giây)
+    "anim_stable_ms": 250,             # phải tĩnh liên tục bấy nhiêu ms mới coi là xong
+    "anim_post_delay": 0.1,            # nghỉ thêm sau khi ổn định (giây)
+    "on_settle_failure": "stop",       # "stop" (an toàn) | "scan" (quét luôn, hành vi cũ)
+    "settle_require_all": True,        # mọi slot đều phải đổi so với trước click
+    "settle_pixel_delta": 15,
+    "settle_change_start_pct": 0.5,
+    "settle_stable_pct": 0.5,
+    "settle_poll_ms": 10,
+
+    # ── Xác nhận kết quả ──
+    "confirm_frames": 2,               # số khung liên tiếp phải đồng thuận (1 = tắt)
+    "confirm_gap_ms": 30,
+    "uncertain_policy": "stop",        # màu đáng ngờ (>=40% ngưỡng): "stop" | "ignore"
+
     "hotkeys": {
         "start_pause": "f6",
         "stop": "f7"

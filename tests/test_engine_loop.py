@@ -39,6 +39,7 @@ def make_test_config(tmp_dir, max_rolls=2, target_colors=None, action_rules=None
     cfg.set("play_sound", False)
     cfg.set("save_screenshot", False)
     cfg.set("use_animation_detection", False)
+    cfg.set("confirm_frames", 1)  # test cũ dựa vào thứ tự frame của fake; test xác nhận nằm trong test_frame_gating.py
     cfg.save()
     return cfg
 

@@ -23,7 +23,7 @@ from PySide6.QtGui import QAction
 from core.config_manager import ConfigManager
 from core.engine import AutoClickEngine, EngineState, SlotAction
 from core.clicker import InputSimulator
-from core.capture import ScreenCapture
+from core.capture import ScreenCapture, get_shared_capture
 from core.macro_recorder import MacroRecorder, MacroPlayer, save_macro, load_macro
 from gui.compact_window import CompactWindow
 from gui.test_inspector import TestInspectorDialog
@@ -446,8 +446,7 @@ class RegionRowWidget(QWidget):
 
         # Ưu tiên dùng ScreenCapture (mss / PIL fallback) để lấy mảng numpy BGR chuẩn xác
         try:
-            from core.capture import ScreenCapture
-            cap = ScreenCapture()
+            cap = get_shared_capture()
             img_bgr = cap.capture_region(x, y, w, h)
             if img_bgr is not None and img_bgr.size > 0:
                 self._last_img_bgr = img_bgr.copy()
@@ -1394,7 +1393,7 @@ class MainWindow(QMainWindow):
             default_slot_idx = None
         try:
             from gui.color_sampler import ColorSamplerDialog
-            cap = ScreenCapture()
+            cap = get_shared_capture()
             self.hide()
             QApplication.processEvents()
             time.sleep(0.15)

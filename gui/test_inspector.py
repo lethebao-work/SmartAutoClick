@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QTabWidget
 )
 
-from core.capture import ScreenCapture
+from core.capture import ScreenCapture, get_shared_capture
 from core.detector import ColorDetector
 
 
@@ -288,7 +288,7 @@ class TestInspectorDialog(QDialog):
             if w:
                 w.deleteLater()
 
-        cap = ScreenCapture()
+        cap = get_shared_capture()
         detector = ColorDetector(custom_colors=self.color_defs)
 
         overall_matched = False

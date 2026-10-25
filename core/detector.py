@@ -144,6 +144,9 @@ class ColorDetector:
                 "matched_percent": 0.0,
                 "confidence": 0.0,
                 "decision": "NO",
+                "uncertain_color": None,
+                "uncertain_name": None,
+                "uncertain_percent": 0.0,
                 "all_percentages": {},
                 "total_pixels": 0
             }
@@ -158,6 +161,10 @@ class ColorDetector:
         best_priority = 999
         primary_confidence = 0.0
         primary_decision = "NO"
+        # Màu chưa đủ ngưỡng nhưng đáng ngờ (>= 40% ngưỡng): KHÔNG được coi là "không có"
+        uncertain_color = None
+        uncertain_name = None
+        uncertain_percent = 0.0
 
         # Tier priority: lower number = rarer = higher priority
         COLOR_PRIORITY = {
@@ -171,6 +178,9 @@ class ColorDetector:
         for color_key, m in matches.items():
             pct = m["percent"]
             all_percentages[color_key] = pct
+            if not m["matched"] and m["decision"] == "UNCERTAIN":
+                if uncertain_color is None or COLOR_PRIORITY.get(color_key, 50) < COLOR_PRIORITY.get(uncertain_color, 50):
+                    uncertain_color, uncertain_name, uncertain_percent = color_key, m["name"], pct
             if m["matched"]:
                 detected = True
                 prio = COLOR_PRIORITY.get(color_key, 50)
@@ -183,8 +193,14 @@ class ColorDetector:
                     primary_confidence = m["confidence"]
                     primary_decision = m["decision"]
 
+        if not detected and uncertain_color is not None:
+            primary_decision = "UNCERTAIN"
+
         h, w = img_bgr.shape[:2]
         return {
+            "uncertain_color": uncertain_color,
+            "uncertain_name": uncertain_name,
+            "uncertain_percent": round(uncertain_percent, 2),
             "detected": detected,
             "matched_color": primary_match_color,
             "matched_name": primary_match_name,
