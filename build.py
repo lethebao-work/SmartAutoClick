@@ -61,21 +61,8 @@ def build():
         print("\n" + "=" * 60)
         print("DONG GOI THANH CONG!")
         exe_path = os.path.join(BASE_DIR, "dist", "SmartAutoClick.exe")
-        print(f"Duong dan file EXE: {exe_path}")
-        
-        # Sao chep config.json sang thu muc dist
-        dist_config = os.path.join(BASE_DIR, "dist", "config.json")
-        src_config = os.path.join(BASE_DIR, "config.json")
-        if os.path.exists(src_config) and not os.path.exists(dist_config):
-            shutil.copy2(src_config, dist_config)
-            print("Da sao chep config.json sang thu muc dist.")
-            
-        # Sao chep thu muc assets sang dist
-        dist_assets = os.path.join(BASE_DIR, "dist", "assets")
-        if not os.path.exists(dist_assets):
-            shutil.copytree(assets_dir, dist_assets)
-            print("Da sao chep thu muc assets sang dist.")
-
+        print(f"Duong dan file EXE duy nhat: {exe_path}")
+        print("Ung dung da duoc bundle toan bo assets va dependencies vao duy nhat 1 file .exe doc lap!")
         print("Ban co the click dup vao SmartAutoClick.exe hoac ghim vao Taskbar!")
         print("=" * 60)
     else:
