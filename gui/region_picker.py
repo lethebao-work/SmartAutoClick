@@ -216,9 +216,20 @@ def pick_region(parent_widget=None) -> Optional[Tuple[int, int, int, int]]:
 
     # Lưu lại ảnh crop thực tế ngay tại thời điểm chọn vùng
     cropped_bgr = [None]
+    rel_coords = [None]  # (rx, ry, rw, rh) theo tỉ lệ
 
     def on_selected(x, y, w, h):
         result[0] = (x, y, w, h)
+        try:
+            from core.coordinates import RelativeRect
+            # Tính tỉ lệ tương đối theo virtual desktop
+            vw = max(1, int(virtual_geometry.width() * dpr))
+            vh = max(1, int(virtual_geometry.height() * dpr))
+            rr = RelativeRect.from_client_rect(x, y, w, h, vw, vh)
+            rel_coords[0] = (rr.rx, rr.ry, rr.rw, rr.rh)
+        except Exception:
+            pass
+
         try:
             # Crop trực tiếp từ screen_pixmap để lưu làm preview chuẩn
             rect = overlay._get_rect()

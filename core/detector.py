@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import time
 from typing import Dict, Any, List, Optional, Tuple
 
 
@@ -229,3 +230,93 @@ class ColorDetector:
                 cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
         return annotated
+
+    def observe(
+        self,
+        frame: Any,
+        target_colors: List[str],
+        region: Optional[Tuple[int, int, int, int]] = None,
+        threshold_percent: Optional[float] = None,
+        border_only: bool = False,
+    ) -> "Observation":
+        """
+        Quan sát hình ảnh và chuyển đổi kết quả nhận diện thành Observation Contract (V3-T9 & V3-T10).
+        Không quyết định click hay dừng (để cho Decision Engine).
+        """
+        from core.capture_interface import Frame
+        from core.observation import Observation, ObservationStatus, DetectedObject
+
+        if isinstance(frame, Frame):
+            frame_id = frame.frame_id
+            geom_ver = frame.geometry_version
+            ts = frame.timestamp
+            img = frame.image
+        else:
+            frame_id = 0
+            geom_ver = 1
+            ts = time.monotonic()
+            img = frame
+
+        if img is None or img.size == 0:
+            return Observation(
+                frame_id=frame_id,
+                geometry_version=geom_ver,
+                timestamp=ts,
+                status=ObservationStatus.FRAME_INVALID,
+                confidence=0.0,
+            )
+
+        # Cắt ROI nếu được yêu cầu
+        if region is not None:
+            rx, ry, rw, rh = region
+            h, w = img.shape[:2]
+            x0, y0 = max(0, rx), max(0, ry)
+            x1, y1 = min(w, x0 + rw), min(h, y0 + rh)
+            if x1 <= x0 or y1 <= y0:
+                crop = img
+            else:
+                crop = img[y0:y1, x0:x1]
+        else:
+            crop = img
+
+        analysis = self.analyze_image(crop, target_colors=target_colors, threshold_percent=threshold_percent, border_only=border_only)
+
+        detected_objects = []
+        if analysis["detected"] and analysis["matched_color"]:
+            color = analysis["matched_color"]
+            obj = DetectedObject(
+                label=color,
+                confidence=analysis["confidence"],
+                coverage_percent=analysis["matched_percent"],
+                bounding_box=region or (0, 0, crop.shape[1], crop.shape[0]),
+                raw_data={"color_name": analysis["matched_name"], "percentages": analysis["all_percentages"]},
+            )
+            detected_objects.append(obj)
+            status = ObservationStatus.VALID
+        elif analysis["decision"] == "UNCERTAIN":
+            color = analysis.get("uncertain_color", "unknown")
+            obj = DetectedObject(
+                label=str(color),
+                confidence=0.4,
+                coverage_percent=analysis.get("uncertain_percent", 0.0),
+                bounding_box=region or (0, 0, crop.shape[1], crop.shape[0]),
+                raw_data={"color_name": analysis.get("uncertain_name", ""), "uncertain": True},
+            )
+            detected_objects.append(obj)
+            status = ObservationStatus.UNCERTAIN
+        else:
+            status = ObservationStatus.NOT_FOUND
+
+        return Observation(
+            frame_id=frame_id,
+            geometry_version=geom_ver,
+            timestamp=ts,
+            detected_objects=detected_objects,
+            confidence=analysis["confidence"] if detected_objects else 0.0,
+            status=status,
+            evidence={
+                "all_percentages": analysis.get("all_percentages", {}),
+                "matched_color": analysis.get("matched_color"),
+                "matched_percent": analysis.get("matched_percent", 0.0),
+            },
+        )

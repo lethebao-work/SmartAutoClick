@@ -1,7 +1,7 @@
 import random
 import sys
 import time
-from typing import Tuple
+from typing import Tuple, Optional, Any
 
 _IS_WIN = sys.platform == "win32"
 
@@ -91,9 +91,61 @@ class InputSimulator:
             time.sleep(self.hold_s)
         return self._send(self._mouse_event(up))
 
+    # ── Tọa độ Cửa sổ & Tương đối (Phase 2 - V2-T2, V2-T9, V2-T11) ───────────
+    @staticmethod
+    def window_to_screen(
+        client_x: int,
+        client_y: int,
+        hwnd: Optional[int] = None,
+        snapshot: Optional[Any] = None,
+    ) -> Tuple[int, int]:
+        """Chuyển tọa độ client pixel của cửa sổ thành screen/desktop pixel."""
+        from core.coordinates import CoordinateTransformer
+        snap = snapshot or CoordinateTransformer.get_window_snapshot(hwnd)
+        return CoordinateTransformer.client_to_screen(client_x, client_y, snap)
+
+    @staticmethod
+    def screen_to_window(
+        screen_x: int,
+        screen_y: int,
+        hwnd: Optional[int] = None,
+        snapshot: Optional[Any] = None,
+    ) -> Tuple[int, int]:
+        """Chuyển tọa độ screen/desktop pixel thành client pixel của cửa sổ."""
+        from core.coordinates import CoordinateTransformer
+        snap = snapshot or CoordinateTransformer.get_window_snapshot(hwnd)
+        return CoordinateTransformer.screen_to_client(screen_x, screen_y, snap)
+
+    def click_relative(
+        self,
+        rx: float,
+        ry: float,
+        hwnd: Optional[int] = None,
+        expected_geometry_version: Optional[int] = None,
+        button: str = "left",
+    ) -> bool:
+        """
+        Click theo tọa độ tương đối (0.0 - 1.0) của cửa sổ game (V2-T1 & V2-T7).
+        Chặn click an toàn nếu geometry không khớp (V2-T11).
+        """
+        from core.coordinates import CoordinateTransformer, RelativePoint, GeometryGuard
+
+        snapshot = CoordinateTransformer.get_window_snapshot(hwnd)
+        if expected_geometry_version is not None:
+            safe, reason = GeometryGuard.verify_geometry_for_action(
+                target_geometry_version=expected_geometry_version,
+                current_snapshot=snapshot,
+            )
+            if not safe:
+                print(f"[InputSimulator] Chặn click do geometry không an toàn: {reason}")
+                return False
+
+        sx, sy = CoordinateTransformer.relative_to_screen(RelativePoint(rx, ry), snapshot)
+        return self.click(sx, sy, button=button)
+
     # ── API chung ────────────────────────────────────────────────────────────
     def click(self, x: int, y: int, button: str = "left", duration: float = 0.0) -> bool:
-        """Click tại (x, y). `duration` giữ để tương thích API cũ (không còn dùng)."""
+        """Click tại (x, y) desktop pixel. `duration` giữ để tương thích API cũ."""
         tx, ty = int(x), int(y)
         if self.randomize_offset and self.jitter_px:
             tx += random.randint(-self.jitter_px, self.jitter_px)

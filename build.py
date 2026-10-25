@@ -55,6 +55,11 @@ def build():
         "--hidden-import=mss",
         "--hidden-import=PIL",
         "--hidden-import=dxcam",
+        "--hidden-import=windows_capture",
+        "--hidden-import=psutil",
+        "--hidden-import=win32gui",
+        "--hidden-import=win32ui",
+        "--hidden-import=win32con",
         "main.py"
     ]
 

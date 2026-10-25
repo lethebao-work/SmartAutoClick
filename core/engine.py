@@ -14,6 +14,10 @@ from core.detector import ColorDetector
 from core.clicker import InputSimulator
 from core.config_manager import ConfigManager, get_data_dir
 from core.window_guard import WindowGuard
+from core.decision_fsm import VisualStateMachine, FSMState
+from core.decision_verification import ActionVerifier, TemporalConfirmationEngine
+from core.recovery import RecoveryManager, SafetyBudget, RecoveryAction
+from core.performance import PerformanceMonitor
 
 try:
     import winsound
@@ -232,6 +236,19 @@ class AutoClickEngine:
         self.rule_engine = RuleEngine.from_config(config_manager)
 
         self.state = EngineState.IDLE
+        self.fsm = VisualStateMachine(initial_state=FSMState.READY)
+        self.action_verifier = ActionVerifier(
+            response_timeout_s=self.config_manager.get("anim_first_change_timeout", 1.5),
+        )
+        self.temporal_confirmation = TemporalConfirmationEngine(
+            required_confirm_frames=self.config_manager.get("confirm_frames", 2),
+        )
+        self.recovery_manager = RecoveryManager(
+            safety_budget=SafetyBudget(
+                max_rolls=self.config_manager.get("max_rolls", 100),
+            )
+        )
+        self.perf_monitor = PerformanceMonitor()
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()

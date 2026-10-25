@@ -94,9 +94,15 @@ def validate_color_definition(rule: Dict[str, Any]) -> Dict[str, Any]:
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "version": "2.4",
+    "schema_version": 3,
+    "coordinate_mode": "relative",     # "relative" (0.0 - 1.0) hoặc "absolute" (legacy desktop pixels)
+    "reference_resolution": [1920, 1080],
+    "target_window_title": "",         # Tên cửa sổ game để auto bind HWND
     "roll_button": {
         "x": 1000,
-        "y": 600
+        "y": 600,
+        "rx": 0.5208,
+        "ry": 0.5556
     },
     "watch_regions": [
         {
@@ -105,7 +111,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "x": 400,
             "y": 300,
             "w": 400,
-            "h": 250
+            "h": 250,
+            "rx": 0.2083,
+            "ry": 0.2778,
+            "rw": 0.2083,
+            "rh": 0.2315
         }
     ],
     "target_colors": [
@@ -177,12 +187,39 @@ class ConfigManager:
                 loaded = json.load(f)
                 merged = copy.deepcopy(DEFAULT_CONFIG)
                 merged.update(loaded)
-                self.data = merged
+                self.data = self._migrate_schema(merged)
                 return self.data
         except Exception as e:
             print(f"[ConfigManager] Error reading config: {e}. Using defaults.")
             self.data = copy.deepcopy(DEFAULT_CONFIG)
             return self.data
+
+    @staticmethod
+    def _migrate_schema(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Di trú profile cấu hình cũ sang schema_version 3 (V2-T3)."""
+        current_version = int(data.get("schema_version", 1))
+        if current_version < 3:
+            ref_res = data.get("reference_resolution", [1920, 1080])
+            ref_w = max(1, int(ref_res[0]))
+            ref_h = max(1, int(ref_res[1]))
+
+            # Di trú nút roll
+            btn = data.get("roll_button", {})
+            if "rx" not in btn and "x" in btn:
+                btn["rx"] = round(float(btn.get("x", 0)) / ref_w, 4)
+                btn["ry"] = round(float(btn.get("y", 0)) / ref_h, 4)
+
+            # Di trú watch_regions
+            for r in data.get("watch_regions", []):
+                if "rx" not in r and "x" in r:
+                    r["rx"] = round(float(r.get("x", 0)) / ref_w, 4)
+                    r["ry"] = round(float(r.get("y", 0)) / ref_h, 4)
+                    r["rw"] = round(float(r.get("w", 50)) / ref_w, 4)
+                    r["rh"] = round(float(r.get("h", 50)) / ref_h, 4)
+
+            data["schema_version"] = 3
+            data["coordinate_mode"] = data.get("coordinate_mode", "relative")
+        return data
 
     def save(self) -> bool:
         """Saves current configuration to file atomically via temp file."""

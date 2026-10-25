@@ -1,6 +1,9 @@
-# 🎯 Smart Auto Click v2.0 — Conditional Visual Auto Clicker
+# 🎯 Smart Auto Click v3.6 — Visual Automation Engine
 
-Ứng dụng Desktop tự động bấm nút kết hợp nhận diện hình ảnh màu sắc (Computer Vision / OpenCV + HSV). Tự động dừng khi phát hiện vật phẩm hoặc đồ hiếm theo màu sắc cấu hình. **Không can thiệp mã nguồn hay bộ nhớ game.**
+Nền tảng tự động hóa thị giác **(Visual Automation Engine)** thông minh trên Windows. Tự động quan sát, xác thực tính ổn định hình ảnh, phân tích trạng thái qua máy trạng thái sự kiện (FSM) và kiểm chứng kết quả hành động.
+
+> **Kiến trúc v3.6 lõi**: `Observe → Understand → Decide → Act → Verify`  
+> Tương thích hoàn toàn Windows 10/11, hỗ trợ Windows Graphics Capture (WGC), DXGI Duplication, MSS và cơ chế tọa độ tương đối theo Client Area.
 
 ---
 

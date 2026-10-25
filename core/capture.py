@@ -186,6 +186,58 @@ class DxgiBackend(_Backend):
                 pass
 
 
+class WgcBackend(_Backend):
+    """
+    Windows Graphics Capture qua windows_capture (V1-T6).
+    Chụp trực tiếp cửa sổ/màn hình bằng Windows Modern Graphics Capture API.
+    """
+    name = "wgc"
+
+    def __init__(self, hwnd: Optional[int] = None):
+        self.hwnd = hwnd
+        self._source = None
+        self._lock = threading.Lock()
+
+    def available(self) -> bool:
+        if sys.platform != "win32":
+            return False
+        try:
+            from core.capture_wgc import WgcSource
+            return WgcSource.is_available()
+        except Exception:
+            return False
+
+    def grab(self, x: int, y: int, w: int, h: int) -> np.ndarray:
+        with self._lock:
+            if self._source is None:
+                from core.capture_wgc import WgcSource
+                self._source = WgcSource(window_hwnd=self.hwnd)
+                if not self._source.start():
+                    raise BackendUnavailable("WGC start thất bại hoặc không tìm thấy cửa sổ")
+                # Cho thời gian nhận khung đầu
+                time.sleep(0.05)
+
+            frame = self._source.latest()
+            if not frame.is_valid or frame.image is None:
+                raise BackendUnavailable(f"WGC chưa có khung hợp lệ ({frame.status})")
+            img = frame.image
+            fh, fw = img.shape[:2]
+            x0, y0 = max(0, int(x)), max(0, int(y))
+            x1, y1 = min(fw, x0 + int(w)), min(fh, y0 + int(h))
+            if x1 <= x0 or y1 <= y0:
+                raise BackendUnavailable("Vùng nằm ngoài kích thước ảnh WGC")
+            return np.ascontiguousarray(img[y0:y1, x0:x1])
+
+    def close(self) -> None:
+        with self._lock:
+            if self._source is not None:
+                try:
+                    self._source.stop()
+                except Exception:
+                    pass
+                self._source = None
+
+
 class PilBackend(_Backend):
     name = "pil"
 
@@ -207,11 +259,13 @@ class PilBackend(_Backend):
 # ScreenCapture (API cũ giữ nguyên: capture_region / capture_fullscreen / save_image / close)
 # ──────────────────────────────────────────────────────────────────────────────
 
+from core.capture_interface import FrameSource, Frame, FrameStatus, to_frame
+
 _FAIL_LIMIT = 3
 _COOLDOWN_S = 5.0
 
 
-class ScreenCapture:
+class ScreenCapture(FrameSource):
     def __init__(self, backend: str = "auto", backends: Optional[Sequence[_Backend]] = None):
         """
         backend: "auto" | "dxgi" | "mss" | "pil" (backend ưu tiên; phần còn lại là dự phòng).
@@ -225,17 +279,56 @@ class ScreenCapture:
         }
         self.active_backend: Optional[str] = None
         self._stat_lock = threading.Lock()
+        self._frame_id: int = 0
+        self._is_running: bool = False
+
+    def start(self) -> bool:
+        self._is_running = True
+        return len(self._chain) > 0
+
+    def stop(self) -> None:
+        self._is_running = False
+        self.close()
+
+    def latest(self) -> Frame:
+        """Trả về Frame Contract toàn màn hình hoặc frame gần nhất."""
+        w, h = self._primary_size()
+        t_capture = time.monotonic()
+        try:
+            img = self.capture_region(0, 0, w, h)
+            self._frame_id += 1
+            return Frame(
+                image=img,
+                frame_id=self._frame_id,
+                timestamp=t_capture,
+                backend=self.active_backend or "unknown",
+                status=FrameStatus.VALID,
+                client_size=(w, h),
+                geometry_version=1,
+            )
+        except Exception as e:
+            self._frame_id += 1
+            return Frame(
+                image=None,
+                frame_id=self._frame_id,
+                timestamp=t_capture,
+                backend=self.active_backend or "unknown",
+                status=FrameStatus.CAPTURE_ERROR,
+                client_size=(w, h),
+                metadata={"error": str(e)},
+            )
 
     # ── chuỗi backend ────────────────────────────────────────────────────────
     @staticmethod
     def _build_chain(pref: str) -> List[_Backend]:
-        all_be = {"dxgi": DxgiBackend, "mss": MssBackend, "pil": PilBackend}
+        all_be = {"wgc": WgcBackend, "dxgi": DxgiBackend, "mss": MssBackend, "pil": PilBackend}
         order = {
-            "auto": ["dxgi", "mss", "pil"],
+            "auto": ["wgc", "dxgi", "mss", "pil"],
+            "wgc": ["wgc", "dxgi", "mss", "pil"],
             "dxgi": ["dxgi", "mss", "pil"],
             "mss": ["mss", "pil"],
             "pil": ["pil"],
-        }.get(pref, ["dxgi", "mss", "pil"])
+        }.get(pref, ["wgc", "dxgi", "mss", "pil"])
         chain = []
         for name in order:
             be = all_be[name]()

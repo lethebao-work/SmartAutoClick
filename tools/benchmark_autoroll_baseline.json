@@ -1,0 +1,45 @@
+{
+  "benchmark": "complete_autoroll_cycle",
+  "cycles": 150,
+  "total_cycle": {
+    "n": 150,
+    "mean_ms": 1.615,
+    "p50_ms": 1.561,
+    "p95_ms": 1.733,
+    "p99_ms": 2.252,
+    "max_ms": 5.434
+  },
+  "action_dispatch": {
+    "n": 150,
+    "mean_ms": 0.001,
+    "p50_ms": 0.001,
+    "p95_ms": 0.002,
+    "p99_ms": 0.004,
+    "max_ms": 0.007
+  },
+  "capture_adapter": {
+    "n": 150,
+    "mean_ms": 0.05,
+    "p50_ms": 0.046,
+    "p95_ms": 0.072,
+    "p99_ms": 0.105,
+    "max_ms": 0.116
+  },
+  "settle_sync": {
+    "n": 150,
+    "mean_ms": 1.487,
+    "p50_ms": 1.458,
+    "p95_ms": 1.614,
+    "p99_ms": 1.77,
+    "max_ms": 2.122
+  },
+  "vision_detect": {
+    "n": 150,
+    "mean_ms": 0.077,
+    "p50_ms": 0.049,
+    "p95_ms": 0.079,
+    "p99_ms": 0.125,
+    "max_ms": 3.573
+  },
+  "throughput_cycles_per_sec": 619.2
+}

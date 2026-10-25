@@ -8,7 +8,10 @@ from typing import List, Tuple, Dict, Any, Optional, Callable
 import numpy as np
 
 
-class FakeFrameSource:
+from core.capture_interface import FrameSource, Frame, FrameStatus, to_frame
+
+
+class FakeFrameSource(FrameSource):
     """Fake capture device allowing scripted frames or simulated errors."""
     def __init__(self, default_shape: Tuple[int, int, int] = (100, 100, 3)):
         self.default_shape = default_shape
@@ -19,6 +22,41 @@ class FakeFrameSource:
         self.fail_forever: bool = False
         self.return_black_frame: bool = False
         self.last_frame: Optional[np.ndarray] = None
+        self.frame_id: int = 0
+        self.is_running: bool = False
+
+    def start(self) -> bool:
+        self.is_running = True
+        return True
+
+    def stop(self) -> None:
+        self.is_running = False
+        self.close()
+
+    def latest(self) -> Frame:
+        """Trả về Frame Contract mô phỏng theo hàng đợi."""
+        self.frame_id += 1
+        t_now = time.monotonic()
+        if self.fail_forever:
+            return Frame(image=None, frame_id=self.frame_id, timestamp=t_now, backend="fake", status=FrameStatus.CAPTURE_ERROR)
+        if self.fail_count_before_ok > 0:
+            self.fail_count_before_ok -= 1
+            return Frame(image=None, frame_id=self.frame_id, timestamp=t_now, backend="fake", status=FrameStatus.CAPTURE_ERROR)
+        if self.raise_on_capture:
+            return Frame(image=None, frame_id=self.frame_id, timestamp=t_now, backend="fake", status=FrameStatus.CAPTURE_ERROR, metadata={"error": str(self.raise_on_capture)})
+        if self.return_black_frame:
+            black = np.zeros(self.default_shape, dtype=np.uint8)
+            return Frame(image=black, frame_id=self.frame_id, timestamp=t_now, backend="fake", status=FrameStatus.VALID, client_size=(self.default_shape[1], self.default_shape[0]))
+
+        if self.frames_queue:
+            self.last_frame = self.frames_queue.pop(0)
+            return Frame(image=self.last_frame.copy(), frame_id=self.frame_id, timestamp=t_now, backend="fake", status=FrameStatus.VALID, client_size=(self.last_frame.shape[1], self.last_frame.shape[0]))
+
+        if self.last_frame is not None:
+            return Frame(image=self.last_frame.copy(), frame_id=self.frame_id, timestamp=t_now, backend="fake", status=FrameStatus.VALID, client_size=(self.last_frame.shape[1], self.last_frame.shape[0]))
+
+        blank = np.zeros(self.default_shape, dtype=np.uint8)
+        return Frame(image=blank, frame_id=self.frame_id, timestamp=t_now, backend="fake", status=FrameStatus.VALID, client_size=(self.default_shape[1], self.default_shape[0]))
 
     def enqueue_frame(self, frame: np.ndarray):
         self.frames_queue.append(frame)
